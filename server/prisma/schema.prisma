@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum ApplicationType {
+  MEMBERSHIP
+  DOI
+  JOURNAL
+}
+
+enum ApplicationStatus {
+  PENDING
+  REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  INTERNAL_USER
+  PUBLISHER
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  email        String        @unique
+  password     String
+  name         String
+  organization String?
+  country      String?
+  website      String?
+  role         UserRole      @default(PUBLISHER)
+  active       Boolean       @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime      @default(now())
+  applications Application[]
+}
+
+model Application {
+  id        Int               @id @default(autoincrement())
+  reference String            @unique
+  type      ApplicationType
+  status    ApplicationStatus @default(PENDING)
+  data      Json
+  userId    Int?
+  user      User?             @relation(fields: [userId], references: [id])
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+}
+
+model ContactMessage {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String
+  organization String?
+  country      String?
+  message      String
+  createdAt    DateTime @default(now())
+}
+
+model Journal {
+  id        Int      @id @default(autoincrement())
+  title     String
+  issn      String   @unique
+  publisher String
+  country   String?
+  score     Float?
+  rank      String?
+  indexed   Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model MembershipCategory {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  eligibility String   @db.Text
+  validity    String
+  usd         String
+  inr         String
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  members     Member[]
+}
+
+model Member {
+  id                      Int                @id @default(autoincrement())
+  membershipId            String?            @unique
+  membershipFrom          DateTime?
+  membershipUntil         DateTime?
+  membershipCategoryId    Int
+  membershipCategory      MembershipCategory @relation(fields: [membershipCategoryId], references: [id])
+  fullName                String
+  email                   String?
+  affiliation             String?
+  country                 String?
+  photo                   String?
+  shortProfile            String?            @db.Text
+  fieldOfExpertise        String?
+  researchPapersPublished Int                @default(0)
+  googleScholarUrl        String?
+  researchGateUrl         String?
+  orcid                   String?
+  active                  Boolean            @default(true)
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+
+  @@index([membershipCategoryId])
+  @@index([fullName])
+}

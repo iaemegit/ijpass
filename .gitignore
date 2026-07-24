@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+uploads/
+private-uploads/
+.chrome-review*/
+.DS_Store
+*.tsbuildinfo
