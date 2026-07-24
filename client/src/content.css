@@ -103,6 +103,19 @@ body { font-size: 1rem; line-height: 1.65; }
 /* Half-spacing layout */
 .min-vh-hero { min-height: 430px; padding-bottom: 1.25rem; padding-top: 1.25rem; }
 .hero-visual { height: 410px; }
+.home-feature-strip { background: linear-gradient(to bottom,var(--navy) 0 28px,#f5f3ec 28px 100%); padding-bottom: 1.15rem; position: relative; }
+.home-feature-nav { background: #fff; border: 1px solid rgba(12,119,113,.15); border-radius: 17px; box-shadow: 0 18px 45px rgba(5,31,48,.14); display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); overflow: hidden; position: relative; z-index: 2; }
+.home-feature-nav>a { align-items: center; color: var(--ink); display: grid; gap: .8rem; grid-template-columns: 46px minmax(0,1fr) auto; min-height: 96px; padding: 1rem 1.15rem; position: relative; transition: background .2s ease,color .2s ease; }
+.home-feature-nav>a+a { border-left: 1px solid #e1e9e7; }
+.home-feature-icon { background: linear-gradient(135deg,#e2f4ef,#f4faf8); border-radius: 12px; color: var(--teal); display: grid; font-size: 1.25rem; height: 46px; place-items: center; transition: background .2s ease,color .2s ease,transform .2s ease; width: 46px; }
+.home-feature-nav>a>span:nth-child(2) { display: flex; flex-direction: column; min-width: 0; }
+.home-feature-nav strong { color: var(--navy); font: 800 1.02rem Manrope; }
+.home-feature-nav small { color: #71838b; font-size: .72rem; line-height: 1.4; margin-top: .12rem; }
+.home-feature-arrow { color: #8aa09f; font-size: .75rem; transition: transform .2s ease; }
+.home-feature-nav>a:hover { background: #f1f8f6; }
+.home-feature-nav>a:hover .home-feature-icon { background: var(--teal); color: #fff; transform: translateY(-2px); }
+.home-feature-nav>a:hover .home-feature-arrow { color: var(--teal); transform: translate(2px,-2px); }
+@media(max-width:767px){.home-feature-strip{background:#f5f3ec;padding:.8rem 0}.home-feature-nav{grid-template-columns:1fr}.home-feature-nav>a{min-height:82px}.home-feature-nav>a+a{border-left:0;border-top:1px solid #e1e9e7}}
 .section-space { padding-bottom: 1.4rem; padding-top: 1.4rem; }
 .page-hero { padding-bottom: 1.5rem; padding-top: 1.5rem; }
 .page-hero .breadcrumb-line { margin-bottom: .75rem; }
