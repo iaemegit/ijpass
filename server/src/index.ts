@@ -2674,6 +2674,14 @@ app.post(
   async (req, res, next) => {
     try {
       const input = affiliationProfileSchema.parse(req.body);
+      const [duplicate] = await prisma.$queryRaw<Array<{ id: bigint }>>(
+        Prisma.sql`SELECT affiliation_id id FROM ijpass_journals.affiliationdata_tbl WHERE university_company=${input.universityCompany} AND address=${input.address || ""} AND country=${input.country || ""} LIMIT 1`,
+      );
+      if (duplicate)
+        return res.status(409).json({
+          message: `This affiliation already exists as Affiliation ID ${Number(duplicate.id)}. Use an Affiliation Merge Request instead of creating a duplicate.`,
+          duplicateAffiliationId: Number(duplicate.id),
+        });
       await prisma.$executeRaw(
         Prisma.sql`INSERT INTO ijpass_journals.affiliationdata_tbl(university_company,city_territory,address,country) VALUES(${input.universityCompany},${input.cityTerritory || ""},${input.address || ""},${input.country || ""})`,
       );
@@ -2693,6 +2701,14 @@ app.put(
     try {
       const id = z.coerce.number().int().positive().parse(req.params.id),
         input = affiliationProfileSchema.parse(req.body);
+      const [duplicate] = await prisma.$queryRaw<Array<{ id: bigint }>>(
+        Prisma.sql`SELECT affiliation_id id FROM ijpass_journals.affiliationdata_tbl WHERE university_company=${input.universityCompany} AND address=${input.address || ""} AND country=${input.country || ""} AND affiliation_id<>${id} LIMIT 1`,
+      );
+      if (duplicate)
+        return res.status(409).json({
+          message: `These affiliation details already belong to Affiliation ID ${Number(duplicate.id)}. Submit an Affiliation Merge Request to combine the records.`,
+          duplicateAffiliationId: Number(duplicate.id),
+        });
       const result = await prisma.$executeRaw(
         Prisma.sql`UPDATE ijpass_journals.affiliationdata_tbl SET university_company=${input.universityCompany},city_territory=${input.cityTerritory || ""},address=${input.address || ""},country=${input.country || ""} WHERE affiliation_id=${id}`,
       );
