@@ -1,1 +1,52 @@
-{"name":"ijpass-server","private":true,"version":"1.0.0","type":"module","scripts":{"dev":"tsx watch src/index.ts","build":"prisma generate && tsc","start":"node dist/index.js","prisma:generate":"prisma generate","prisma:migrate":"prisma migrate dev","seed:admin":"tsx src/seed-admin.ts","seed:membership-categories":"tsx src/seed-membership-categories.ts","backfill:membership-ids":"tsx src/backfill-membership-ids.ts","smtp:verify":"tsx src/verify-mail.ts"},"dependencies":{"@prisma/client":"6.6.0","bcryptjs":"^3.0.2","cors":"^2.8.5","dotenv":"^16.5.0","express":"^5.1.0","jsonwebtoken":"^9.0.2","multer":"^1.4.5-lts.2","nodemailer":"^9.0.3","zod":"^3.24.2"},"devDependencies":{"@types/cors":"^2.8.17","@types/express":"^5.0.1","@types/jsonwebtoken":"^9.0.9","@types/multer":"^1.4.12","@types/node":"^22.13.10","@types/nodemailer":"^8.0.1","prisma":"6.6.0","tsx":"^4.19.3","typescript":"~5.7.2"}}
+{
+  "name": "ijpass-server",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "prisma generate && tsc",
+    "start": "node dist/index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "seed:admin": "tsx src/seed-admin.ts",
+    "seed:membership-categories": "tsx src/seed-membership-categories.ts",
+    "setup:journal-publishers": "tsx src/setup-journal-publishers.ts",
+    "setup:author-salutations": "tsx src/setup-author-salutations.ts",
+    "setup:affiliation-locations": "tsx src/setup-affiliation-locations.ts",
+    "setup:manuscript-subject-areas": "tsx src/setup-manuscript-subject-areas.ts",
+    "assign:remaining-subject-areas": "tsx src/assign-remaining-manuscript-subject-areas.ts",
+    "backfill:resource-subject-areas": "tsx src/backfill-resource-subject-areas.ts",
+    "setup:subject-area-hierarchy": "tsx src/setup-subject-area-hierarchy.ts",
+    "import:subject-areas": "tsx src/import-subject-areas.ts",
+    "setup:manuscript-author-entry": "tsx src/setup-manuscript-author-entry.ts",
+    "normalize:countries": "tsx src/normalize-countries.ts",
+    "backfill:membership-ids": "tsx src/backfill-membership-ids.ts",
+    "smtp:verify": "tsx src/verify-mail.ts",
+    "search:sync": "tsx src/sync-elasticsearch.ts"
+  },
+  "dependencies": {
+    "@elastic/elasticsearch": "^8.19.1",
+    "@prisma/client": "6.6.0",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.2",
+    "nodemailer": "^9.0.3",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.13.10",
+    "@types/nodemailer": "^8.0.1",
+    "prisma": "6.6.0",
+    "tsx": "^4.19.3",
+    "typescript": "~5.7.2"
+  }
+}

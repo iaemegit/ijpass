@@ -26,6 +26,12 @@ enum UserRole {
   PUBLISHER
 }
 
+enum AuthorMergeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model User {
   id           Int           @id @default(autoincrement())
   email        String        @unique
@@ -113,4 +119,32 @@ model Member {
 
   @@index([membershipCategoryId])
   @@index([fullName])
+}
+
+model AuthorMergeRequest {
+  id                Int               @id @default(autoincrement())
+  reference         String            @unique
+  requestedName     String
+  authorIds         Json
+  status            AuthorMergeStatus @default(PENDING)
+  canonicalAuthorId Int?
+  reviewedById      Int?
+  createdAt         DateTime          @default(now())
+  reviewedAt        DateTime?
+
+  @@index([status, createdAt])
+}
+
+model AffiliationMergeRequest {
+  id                     Int               @id @default(autoincrement())
+  reference              String            @unique
+  requestedName          String
+  affiliationIds         Json
+  status                 AuthorMergeStatus @default(PENDING)
+  canonicalAffiliationId Int?
+  reviewedById           Int?
+  createdAt              DateTime          @default(now())
+  reviewedAt             DateTime?
+
+  @@index([status, createdAt])
 }

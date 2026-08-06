@@ -16,26 +16,39 @@ export default function MembersListPage() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestionsEnabled, setSuggestionsEnabled] = useState(true);
 
   useEffect(() => {
-    setLoading(true);
-    setError('');
-    api.get<{ categories: Category[]; members: Member[] }>('/members')
-      .then(({ data }) => { setCategories(data.categories); setMembers(data.members); })
-      .catch(() => setError('The members directory could not be loaded. Please try again.'))
-      .finally(() => setLoading(false));
-  }, []);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      setError('');
+      api.get<{ categories: Category[]; members: Member[] }>('/members', { params: query.trim() ? { q: query.trim() } : undefined, signal: controller.signal })
+        .then(({ data }) => { setCategories(data.categories); setMembers(data.members); })
+        .catch(requestError => { if (requestError.code !== 'ERR_CANCELED') setError('The members directory could not be loaded. Please try again.'); })
+        .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    }, query.trim() ? 250 : 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [query]);
 
-  const filteredMembers = useMemo(() => {
-    const search = query.trim().toLocaleLowerCase();
-    return search ? members.filter(member => member.name.toLocaleLowerCase().includes(search)) : members;
-  }, [members, query]);
-  const groups = useMemo(() => categories.map(category => ({ ...category, members: filteredMembers.filter(member => member.category === category.name) })).filter(group => group.members.length), [categories, filteredMembers]);
+  useEffect(() => {
+    if (!suggestionsEnabled || query.trim().length < 2) { setSuggestions([]); return; }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      api.get<{ suggestions: string[] }>('/members/suggestions', { params: { q: query.trim() }, signal: controller.signal })
+        .then(({ data }) => setSuggestions(data.suggestions || []))
+        .catch(() => setSuggestions([]));
+    }, 220);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [query, suggestionsEnabled]);
+
+  const groups = useMemo(() => categories.map(category => ({ ...category, members: members.filter(member => member.category === category.name) })).filter(group => group.members.length), [categories, members]);
 
   return <>
     <section className="page-hero"><div className="container"><div className="breadcrumb-line"><Link to="/">Home</Link><i className="bi bi-chevron-right"/><Link to="/membership">Membership</Link><i className="bi bi-chevron-right"/><span>Members List</span></div><span className="eyebrow-light">IJPAss Directory</span><h1>Members List</h1><p>Explore registered IJPAss members organized by membership category.</p></div></section>
     <section className="section-space members-directory"><div className="container">
-      <div className="members-toolbar"><div><span className="eyebrow">Member directory</span><h2>Find an IJPAss <span>member.</span></h2><p>Search the directory by member or organization name.</p></div><div className="member-search"><i className="bi bi-search"/><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search by name…" aria-label="Search members by name" autoComplete="off"/><button type="button" onClick={() => setQuery('')} className={query ? '' : 'invisible'} aria-label="Clear search"><i className="bi bi-x-lg"/></button></div></div>
+      <div className="members-toolbar"><div><span className="eyebrow">Member directory</span><h2>Find an IJPAss <span>member.</span></h2><p>Search the directory by member or organization name.</p></div><div className="member-search member-search-autocomplete"><i className="bi bi-search"/><input type="search" value={query} onChange={event => { setQuery(event.target.value); setSuggestionsEnabled(true); }} placeholder="Search name, affiliation or country" aria-label="Search members" autoComplete="off" aria-autocomplete="list" aria-expanded={suggestions.length > 0}/><button type="button" onClick={() => { setQuery(''); setSuggestions([]); }} className={query ? '' : 'invisible'} aria-label="Clear search"><i className="bi bi-x-lg"/></button>{suggestions.length > 0 && <div className="search-autocomplete-menu" role="listbox">{suggestions.map((name) => <button type="button" key={name} role="option" onClick={() => { setQuery(name); setSuggestions([]); setSuggestionsEnabled(false); }}><i className="bi bi-person"/><span>{name}</span></button>)}</div>}</div></div>
       {error && <div className="alert alert-danger">{error}</div>}
       {loading && <div className="directory-state"><span className="spinner-border text-success"/><p>Loading members…</p></div>}
       {!loading && !groups.length && <div className="directory-state"><i className="bi bi-people"/><h3>{query ? 'No matching members' : 'No members are currently listed'}</h3><p>{query ? `No member name matches “${query}”.` : 'Approved member records will appear here by category.'}</p></div>}

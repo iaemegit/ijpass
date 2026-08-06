@@ -9,18 +9,34 @@ import MemberManager from './MemberManager';
 import MembershipApplicationList from './MembershipApplicationList';
 import AdminPagination, { ADMIN_PAGE_SIZE, pageSlice } from './AdminPagination';
 import AdminTableControls from './AdminTableControls';
+import SourceManager from './SourceManager';
+import ManuscriptManager from './ManuscriptManager';
+import JournalPublisherManager from './JournalPublisherManager';
+import ProfileDataManager from './ProfileDataManager';
+import AuthorMergeRequestManager from './AuthorMergeRequestManager';
+import AffiliationMergeRequestManager from './AffiliationMergeRequestManager';
+import SubjectAreaManager from './SubjectAreaManager';
 
 type Summary = { users: number; journals: number; applications: number; messages: number };
-type ModuleId = 'overview' | 'internal-users' | 'publishers' | 'journals' | 'membership-categories' | 'members' | 'ranking' | 'applications' | 'contacts' | 'settings';
+type ModuleId = 'overview' | 'internal-users' | 'publishers' | 'journal-publishers' | 'sources' | 'manuscripts' | 'author-profiles' | 'author-merge-requests' | 'affiliation-profiles' | 'affiliation-merge-requests' | 'major-subjects' | 'classification-names' | 'subject-areas' | 'membership-categories' | 'members' | 'ranking' | 'applications' | 'contacts' | 'settings';
 const modules: { id: ModuleId; label: string; icon: string; group: string; path: string }[] = [
   { id: 'overview', label: 'Dashboard Overview', icon: 'bi-grid-1x2', group: 'Dashboard', path: '/admin/dashboard' },
   { id: 'internal-users', label: 'Internal Users', icon: 'bi-person-gear', group: 'Account Forms', path: '/admin/internal-users' },
   { id: 'publishers', label: 'Publisher Accounts', icon: 'bi-building-add', group: 'Account Forms', path: '/admin/publishers' },
-  { id: 'journals', label: 'Journal Entry', icon: 'bi-journal-plus', group: 'Data Entry Forms', path: '/admin/journals' },
+  { id: 'journal-publishers', label: 'Source Publishers', icon: 'bi-buildings', group: 'Data Entry Forms', path: '/admin/journal-publishers' },
+  { id: 'sources', label: 'Resource List', icon: 'bi-journals', group: 'Data Entry Forms', path: '/admin/sources' },
+  { id: 'manuscripts', label: 'Manuscript List', icon: 'bi-file-earmark-richtext', group: 'Data Entry Forms', path: '/admin/manuscripts' },
+  { id: 'author-profiles', label: 'Author Profiles', icon: 'bi-person-vcard', group: 'Data Entry Forms', path: '/admin/author-profiles' },
+  { id: 'affiliation-profiles', label: 'Affiliation Profiles', icon: 'bi-building', group: 'Data Entry Forms', path: '/admin/affiliation-profiles' },
+  { id: 'major-subjects', label: 'Major Subject', icon: 'bi-collection', group: 'Subject Area Data', path: '/admin/major-subjects' },
+  { id: 'classification-names', label: 'Classification Name', icon: 'bi-diagram-2', group: 'Subject Area Data', path: '/admin/classification-names' },
+  { id: 'subject-areas', label: 'Subject Area', icon: 'bi-diagram-3', group: 'Subject Area Data', path: '/admin/subject-areas' },
   { id: 'membership-categories', label: 'Membership Categories', icon: 'bi-person-vcard', group: 'Data Entry Forms', path: '/admin/membership-categories' },
   { id: 'members', label: 'Members List', icon: 'bi-people', group: 'Data Entry Forms', path: '/admin/members' },
   { id: 'ranking', label: 'Ranking & Citations', icon: 'bi-bar-chart-line', group: 'Data Entry Forms', path: '/admin/ranking-citations' },
   { id: 'applications', label: 'Membership Applications', icon: 'bi-file-earmark-person', group: 'Records', path: '/admin/membership-applications' },
+  { id: 'author-merge-requests', label: 'Author Merge Requests', icon: 'bi-person-check', group: 'Records', path: '/admin/author-merge-requests' },
+  { id: 'affiliation-merge-requests', label: 'Affiliation Merge Requests', icon: 'bi-building-check', group: 'Records', path: '/admin/affiliation-merge-requests' },
   { id: 'contacts', label: 'Contact Enquiries', icon: 'bi-envelope-paper', group: 'Records', path: '/admin/contact-enquiries' },
   { id: 'settings', label: 'Portal Settings', icon: 'bi-sliders', group: 'System', path: '/admin/settings' }
 ];
@@ -70,13 +86,23 @@ export default function AdminWorkspace({ user, summary, logout }: { user: Portal
   const renderPanel = () => {
     if (active === 'internal-users') return <InternalUserManager mode={isAddNew ? 'form' : 'list'}/>;
     if (active === 'publishers') return <PublisherManager mode={isAddNew ? 'form' : 'list'}/>;
+    if (active === 'journal-publishers') return <JournalPublisherManager mode={isAddNew ? 'form' : 'list'}/>;
+    if (active === 'sources') return <SourceManager mode={isAddNew ? 'form' : 'list'}/>;
+    if (active === 'manuscripts') return <ManuscriptManager mode={isAddNew ? 'form' : 'list'}/>;
+    if (active === 'author-profiles') return <ProfileDataManager kind="authors" mode={isAddNew ? 'form' : 'list'}/>;
+    if (active === 'affiliation-profiles') return <ProfileDataManager kind="affiliations" mode={isAddNew ? 'form' : 'list'}/>;
+    if (active === 'major-subjects') return <SubjectAreaManager kind="majors" mode={isAddNew ? 'form' : 'list'}/>;
+    if (active === 'classification-names') return <SubjectAreaManager kind="classifications" mode={isAddNew ? 'form' : 'list'}/>;
+    if (active === 'subject-areas') return <SubjectAreaManager kind="subjects" mode={isAddNew ? 'form' : 'list'}/>;
     if (active === 'membership-categories') return <MembershipCategoryManager mode={isAddNew ? 'form' : 'list'}/>;
     if (active === 'members') return <MemberManager mode={isAddNew ? 'form' : 'list'}/>;
-    if (active === 'journals' || active === 'ranking') return isAddNew ? <DraftForm type={active} onBack={() => openModule(active)}/> : <RecordList type={active} onAdd={() => navigate(`${modules.find(item => item.id === active)!.path}/addnew`)}/>;
+    if (active === 'ranking') return isAddNew ? <DraftForm type={active} onBack={() => openModule(active)}/> : <RecordList type={active} onAdd={() => navigate(`${modules.find(item => item.id === active)!.path}/addnew`)}/>;
     if (active === 'contacts') return <ContactEnquiryList/>;
     if (active === 'applications') return <MembershipApplicationList/>;
+    if (active === 'author-merge-requests') return <AuthorMergeRequestManager/>;
+    if (active === 'affiliation-merge-requests') return <AffiliationMergeRequestManager/>;
     if (active === 'settings') return isAddNew ? <SettingsForm onBack={() => openModule('settings')}/> : <RecordList type="settings" onAdd={() => navigate('/admin/settings/addnew')}/>;
-    return <><div className="admin-welcome"><div><span className="eyebrow">Super Admin dashboard</span><h1>Welcome, {user.name}</h1><p>Manage accounts, journals, applications, rankings, and association records.</p></div><span className="admin-role"><i className="bi bi-shield-check"/>Super Admin</span></div><div className="portal-grid">{[['bi-people','Users',summary.users],['bi-journals','Journals',summary.journals],['bi-file-earmark-check','Applications',summary.applications],['bi-envelope','Enquiries',summary.messages]].map(([icon,title,value])=><div className="portal-card" key={String(title)}><i className={`bi ${icon}`}/><div><span>{title}</span><strong>{value}</strong></div></div>)}</div><div className="quick-forms"><h2>Quick access to forms</h2><div>{modules.filter(module=>['internal-users','publishers','journals','membership-categories'].includes(module.id)).map(module=><button key={module.id} onClick={()=>openModule(module.id)}><i className={`bi ${module.icon}`}/><span>{module.label}</span><i className="bi bi-arrow-right"/></button>)}</div></div></>;
+    return <><div className="admin-welcome"><div><span className="eyebrow">Super Admin dashboard</span><h1>Welcome, {user.name}</h1><p>Manage accounts, journals, applications, rankings, and association records.</p></div><span className="admin-role"><i className="bi bi-shield-check"/>Super Admin</span></div><div className="portal-grid">{[['bi-people','Users',summary.users],['bi-journals','Journals',summary.journals],['bi-file-earmark-check','Applications',summary.applications],['bi-envelope','Enquiries',summary.messages]].map(([icon,title,value])=><div className="portal-card" key={String(title)}><i className={`bi ${icon}`}/><div><span>{title}</span><strong>{value}</strong></div></div>)}</div><div className="quick-forms"><h2>Quick access to forms</h2><div>{modules.filter(module=>['internal-users','publishers','membership-categories'].includes(module.id)).map(module=><button key={module.id} onClick={()=>openModule(module.id)}><i className={`bi ${module.icon}`}/><span>{module.label}</span><i className="bi bi-arrow-right"/></button>)}</div></div></>;
   };
   return <div className={`admin-dashboard ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}><aside className="admin-sidebar"><div className="admin-sidebar-head"><span className="brand-mark">IJ</span><div><strong>IJPAss Admin</strong><small>Data Management Portal</small></div><button type="button" className="admin-sidebar-toggle" onClick={() => setSidebarCollapsed(value => !value)} title={sidebarCollapsed ? 'Expand menu' : 'Collapse menu'} aria-label={sidebarCollapsed ? 'Expand left menu' : 'Collapse left menu'}><i className={`bi ${sidebarCollapsed ? 'bi-chevron-right' : 'bi-chevron-left'}`}/></button></div><nav>{groups.map(group=><div className="admin-nav-group" key={group}><span>{group}</span>{modules.filter(module=>module.group===group).map(module=><button className={active===module.id?'active':''} key={module.id} onClick={()=>openModule(module.id)} title={sidebarCollapsed ? module.label : undefined}><i className={`bi ${module.icon}`}/>{module.label}</button>)}</div>)}</nav><div className="admin-user"><div className="admin-avatar">{user.name.slice(0,2).toUpperCase()}</div><div><b>{user.name}</b><small>{user.email}</small></div><button onClick={logout} title="Sign out"><i className="bi bi-box-arrow-right"/></button></div></aside><main className="admin-workspace"><div className="admin-mobile-bar"><select value={active} onChange={event=>openModule(event.target.value as ModuleId)}>{modules.map(module=><option value={module.id} key={module.id}>{module.label}</option>)}</select><button onClick={logout} title="Sign out"><i className="bi bi-box-arrow-right"/></button></div>{renderPanel()}</main></div>;
 }

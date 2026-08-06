@@ -1,0 +1,44 @@
+.hero-visual .float-card {
+  color: var(--ink);
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+
+.hero-visual .float-card:hover {
+  color: var(--ink);
+  transform: translateY(-4px);
+  box-shadow: 0 22px 52px #0005;
+}
+
+.hero-visual .float-card > i:first-child {
+  color: var(--teal);
+  font-size: 1.8rem;
+}
+
+.hero-visual .float-card span {
+  flex: 1;
+}
+
+.hero-visual .float-card .float-card-arrow {
+  color: var(--teal);
+  font-size: .9rem;
+}
+
+.hero-visual .card-one {
+  top: 10%;
+  right: -5%;
+}
+
+.hero-visual .card-two {
+  bottom: 8%;
+  left: 0;
+}
+
+.hero-visual .card-three {
+  top: 31%;
+  left: -5%;
+}
+
+.hero-visual .card-four {
+  right: -9%;
+  bottom: 28%;
+}

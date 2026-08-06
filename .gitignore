@@ -7,3 +7,4 @@ private-uploads/
 .chrome-review*/
 .DS_Store
 *.tsbuildinfo
+.local/

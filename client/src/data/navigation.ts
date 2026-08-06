@@ -5,9 +5,9 @@ export const navigation: NavItem[] = [
   { label: 'Home', path: '/' },
   { label: 'About', path: '/about', children: [
     { label: 'About IJPAss', path: '/about/ijpass' }, { label: 'Vision & Mission', path: '/about/vision-mission' },
-    { label: 'Leadership', path: '/about/leadership' }, { label: 'Contact Us', path: '/about/contact' }] },
-  { label: 'Aim & Scope', path: '/aim-scope', children: [
-    { label: 'Aim', path: '/aim-scope/aim' }, { label: 'Scope', path: '/aim-scope/scope' }, { label: 'Objectives', path: '/aim-scope/objectives' }] },
+    { label: 'Leadership', path: '/about/leadership' }, { label: 'Aim', path: '/aim-scope/aim' },
+    { label: 'Scope', path: '/aim-scope/scope' }, { label: 'Objectives', path: '/aim-scope/objectives' },
+    { label: 'Contact Us', path: '/about/contact' }] },
   { label: 'Role of IJPAss', path: '/role', children: [
     { label: 'Publishing Excellence', path: '/role/publishing-excellence' }, { label: 'Research Integrity', path: '/role/research-integrity' },
     { label: 'International Collaboration', path: '/role/international-collaboration' }, { label: 'Digital Publishing', path: '/role/digital-publishing' },
@@ -16,8 +16,11 @@ export const navigation: NavItem[] = [
     { label: 'Membership Categories', path: '/membership/categories' }, { label: 'Members List', path: '/membership/members' }, { label: 'Membership Benefits', path: '/membership/benefits' },
     { label: 'Membership Fees', path: '/membership/fees' }, { label: 'Apply for Membership', path: '/membership/apply' },
     { label: 'Renew Membership', path: '/membership/renew' }] },
+  { label: 'Citation Database', path: '/indexing-db', children: [
+    { label: 'Resources', path: '/indexing-db/resources' }, { label: 'Authors', path: '/indexing-db/authors' },
+    { label: 'Affiliation', path: '/indexing-db/affiliations' }, { label: 'Country', path: '/indexing-db/countries' }] },
   { label: 'Journal Ranking', path: '/journal-ranking', children: [
-    { label: 'Ranking Methodology', path: '/journal-ranking/methodology' }, { label: 'Journal Directory', path: '/journal-ranking/directory' },
+    { label: 'Ranking Methodology', path: '/journal-ranking/methodology' }, { label: 'Journal Directory', path: '/journal-ranking/index' },
     { label: 'Submit Journal', path: '/journal-ranking/submit' }, { label: 'Evaluation Criteria', path: '/journal-ranking/criteria' },
     { label: 'Ranking Results', path: '/journal-ranking/results' }, { label: 'Citation Tracking', path: '/journal-ranking/citations' }] },
   { label: 'Contact', path: '/contact' }
@@ -41,6 +44,7 @@ Object.assign(pageCopy, {
   '/membership/categories': { title: 'Membership Categories', eyebrow: 'Membership', text: 'Choose the IJPAss membership category that best represents your role in scholarly publishing.' },
   '/membership/benefits': { title: 'Membership Benefits', eyebrow: 'Membership', text: 'Professional recognition, resources, training, visibility, collaboration, and publishing support tailored to every member category.' },
   '/membership/fees': { title: 'Membership Fees', eyebrow: 'Membership', text: 'Clear annual and lifetime membership options for the international scholarly publishing community.' },
+  '/indexing-db': { title: 'Indexing DB', eyebrow: 'Scholarly Data', text: 'Search indexed resources, authors, affiliations, countries, publications, and research-impact metrics.' },
   '/journal-ranking': { title: 'Journal Ranking', eyebrow: 'Quality & Recognition', text: 'Objective evaluation based on editorial quality, peer review, publication standards, citations, research impact, and ethical compliance.' },
   '/journal-ranking/citations': { title: 'Citation Tracking', eyebrow: 'Journal Ranking', text: 'Publication metrics that reveal the influence, visibility, and research impact of journals and articles.' }
 });

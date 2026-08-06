@@ -1,0 +1,5 @@
+Relative Citation Ratio (RCR)
+
+RCR = Article Citation Rate (ACR) / Expected Citation Rate
+
+Field-Weighted Citation Impact (FWCI)

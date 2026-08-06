@@ -1,0 +1,77 @@
+IJPAss Web Platform
+
+Project Description
+This project is the web platform for the International Journal Publishers Association (IJPAss).
+It includes a React + Vite frontend, an Express + TypeScript backend, Prisma ORM, MySQL data storage,
+and Elasticsearch-powered search for indexed resources, authors, affiliations, countries, and journals.
+
+Main capabilities
+- Public website pages for IJPAss content
+- Admin dashboards for super admin, internal users, publishers, members, authors, affiliations, journals, and manuscripts
+- Contact enquiry forms with email confirmation support
+- Membership management and application workflows
+- Journal ranking and indexed database pages
+- Search suggestions and filtering powered by Elasticsearch with MySQL fallback
+
+How to run the app locally
+1. Install dependencies from the project root:
+   npm install
+2. Create the backend environment file:
+   copy server/.env.example to server/.env
+3. Update server/.env with your actual database and service values.
+4. Generate Prisma client:
+   npm run prisma:generate --workspace server
+5. Push the Prisma schema to MySQL:
+   npm exec --workspace server -- prisma db push
+   or run migrations if you prefer:
+   npm run prisma:migrate --workspace server
+6. Start Elasticsearch if you want search indexing:
+   npm run search:start
+7. Sync the database content into Elasticsearch:
+   npm run search:sync
+8. Start the full app:
+   npm run dev
+
+
+
+Database details
+Primary database:
+- Type: MySQL / MariaDB
+- Database name: ijpass
+- Used by Prisma through server/.env DATABASE_URL
+
+Journal and citation database:
+- Schema/database name: ijpass_journals
+- This database stores journal, manuscript, author profile, authorship, affiliation, reference, and publisher data
+- The backend reads from this schema for indexed search, journal ranking, author profiles, and affiliation views
+
+Example backend environment values
+- DATABASE_URL=mysql://<user>:<password>@localhost:3306/ijpass
+- PORT=4001
+- PUBLIC_SITE_URL=http://localhost:5173
+- ELASTICSEARCH_URL=http://localhost:9200
+- SUPER_ADMIN_EMAIL=admin@ijpass.com
+
+Notes
+- The app uses MySQL as the main data source.
+- Elasticsearch is used for faster indexed search and can be refreshed with the sync command.
+- Email delivery depends on the SMTP values in server/.env.
+
+
+How to run in VS Code terminal
+1. Open the project folder in VS Code.
+2. Open Terminal > New Terminal.
+3. Run these commands one by one:
+   npm install
+   npm run prisma:generate --workspace server
+   npm exec --workspace server -- prisma db push
+   npm run search:start
+   npm run search:sync
+   npm run dev
+4. Open the app in your browser at http://localhost:5173
+5. Keep the terminal window open while you are using the app.
+
+Local URLs
+- Frontend: http://localhost:5173
+- Backend API: http://localhost:4001
+- Elasticsearch: http://localhost:9200
