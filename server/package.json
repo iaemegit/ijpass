@@ -21,6 +21,7 @@
     "import:subject-areas": "tsx src/import-subject-areas.ts",
     "setup:manuscript-author-entry": "tsx src/setup-manuscript-author-entry.ts",
     "normalize:countries": "tsx src/normalize-countries.ts",
+    "maintenance:clean-journal-data": "tsx src/clean-journal-data.ts",
     "backfill:membership-ids": "tsx src/backfill-membership-ids.ts",
     "smtp:verify": "tsx src/verify-mail.ts",
     "search:sync": "tsx src/sync-elasticsearch.ts"
@@ -33,6 +34,7 @@
     "dotenv": "^16.5.0",
     "exceljs": "^4.4.0",
     "express": "^5.1.0",
+    "he": "^1.2.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.2",
     "nodemailer": "^9.0.3",
@@ -41,6 +43,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.1",
+    "@types/he": "^1.2.3",
     "@types/jsonwebtoken": "^9.0.9",
     "@types/multer": "^1.4.12",
     "@types/node": "^22.13.10",
