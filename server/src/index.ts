@@ -3322,8 +3322,27 @@ app.get(
   "/api/admin/sources",
   requireAuth,
   requireRole(UserRole.SUPER_ADMIN),
-  async (_req, res, next) => {
+  async (req, res, next) => {
     try {
+      const input = z.object({
+        q: z.string().trim().max(255).catch(""),
+        page: z.coerce.number().int().positive().catch(1),
+        sort: z.enum(["newest", "title", "publisher", "year", "articles", "citations"]).catch("newest"),
+      }).parse(req.query);
+      const pageSize = 20;
+      const search = input.q ? Prisma.sql`WHERE source.journal_title LIKE ${`%${input.q}%`} OR source.abbreviation LIKE ${`%${input.q}%`} OR source.print_issn LIKE ${`%${input.q}%`} OR source.online_issn LIKE ${`%${input.q}%`} OR source.subject_area LIKE ${`%${input.q}%`} OR source.source_type LIKE ${`%${input.q}%`} OR source.publisher LIKE ${`%${input.q}%`} OR CAST(source.source_data_id AS CHAR) LIKE ${`%${input.q}%`}` : Prisma.empty;
+      const [{ total }] = await prisma.$queryRaw<Array<{ total: bigint }>>(
+        Prisma.sql`SELECT COUNT(*) total FROM ijpass_journals.sourcedata_tbl source ${search}`,
+      );
+      const totalRecords = Number(total);
+      const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
+      const page = Math.min(input.page, totalPages);
+      const offset = (page - 1) * pageSize;
+      const order = input.sort === "title" ? Prisma.sql`source.journal_title ASC`
+        : input.sort === "publisher" ? Prisma.sql`publisher ASC, source.journal_title ASC`
+        : input.sort === "year" ? Prisma.sql`source.indexed_from_year DESC, source.source_data_id DESC`
+        : input.sort === "articles" ? Prisma.sql`articleCount DESC, source.source_data_id DESC`
+        : Prisma.sql`source.source_data_id DESC`;
       const records = await prisma.$queryRaw<
         Array<{
           id: bigint;
@@ -3348,30 +3367,53 @@ app.get(
         source.subject_area AS subjectArea, COALESCE(source.source_type, 'Journal') AS sourceType,
         source.publisher_id AS publisherId, COALESCE(publisher.publisher_name, source.publisher) AS publisher,
         source.indexed_from_year AS indexedFromYear, source.website, source.email,
-        COUNT(manuscript.manuscript_id) AS articleCount, COALESCE(MAX(citation_totals.citation_count), 0) AS citationCount
+        COUNT(manuscript.manuscript_id) AS articleCount, 0 AS citationCount
       FROM ijpass_journals.sourcedata_tbl AS source
       LEFT JOIN ijpass_journals.publisher_tbl AS publisher ON publisher.publisher_id = source.publisher_id
       LEFT JOIN ijpass_journals.manuscript_tbl AS manuscript ON manuscript.journal_id = source.source_data_id
-      LEFT JOIN (
-        SELECT cited_manuscript.journal_id, COUNT(*) AS citation_count
-        FROM ijpass_journals.manuscript_tbl AS cited_manuscript
-        INNER JOIN ijpass_journals.refdat_table AS matching_reference
-          ON matching_reference.publication_year = cited_manuscript.publication_year
-          AND REGEXP_REPLACE(LOWER(TRIM(matching_reference.article_title)), '[^[:alnum:]]+', '') = REGEXP_REPLACE(LOWER(TRIM(cited_manuscript.article_title)), '[^[:alnum:]]+', '')
-          AND matching_reference.manuscript_id <> cited_manuscript.manuscript_id
-        GROUP BY cited_manuscript.journal_id
-      ) AS citation_totals ON citation_totals.journal_id = source.source_data_id
+      ${search}
       GROUP BY source.source_data_id, source.journal_id, source.journal_title, source.abbreviation, source.print_issn, source.online_issn, source.subject_area, source.source_type, source.publisher_id, publisher.publisher_name, source.publisher, source.indexed_from_year, source.website, source.email
-      ORDER BY source.source_data_id DESC
+      ORDER BY ${order} LIMIT ${pageSize} OFFSET ${offset}
     `);
+      const sourceIds = records.map((record) => Number(record.id));
+      const citationRows = sourceIds.length ? await prisma.$queryRaw<Array<{ sourceId: bigint; citationCount: bigint }>>(
+        Prisma.sql`SELECT cited_manuscript.journal_id sourceId,COUNT(*) citationCount FROM ijpass_journals.manuscript_tbl cited_manuscript INNER JOIN ijpass_journals.refdat_table matching_reference ON matching_reference.publication_year=cited_manuscript.publication_year AND REGEXP_REPLACE(LOWER(TRIM(matching_reference.article_title)),'[^[:alnum:]]+','')=REGEXP_REPLACE(LOWER(TRIM(cited_manuscript.article_title)),'[^[:alnum:]]+','') AND matching_reference.manuscript_id<>cited_manuscript.manuscript_id WHERE cited_manuscript.journal_id IN (${Prisma.join(sourceIds)}) GROUP BY cited_manuscript.journal_id`,
+      ) : [];
+      const citationMap = new Map(citationRows.map((row) => [Number(row.sourceId), Number(row.citationCount)]));
+      const sources = records.map((record) => ({
+        ...record,
+        id: Number(record.id),
+        articleCount: Number(record.articleCount),
+        citationCount: citationMap.get(Number(record.id)) ?? 0,
+      }));
+      if (input.sort === "citations") sources.sort((a, b) => b.citationCount - a.citationCount || b.id - a.id);
       return res.json({
-        sources: records.map((record) => ({
-          ...record,
-          id: Number(record.id),
-          articleCount: Number(record.articleCount),
-          citationCount: Number(record.citationCount),
-        })),
+        sources,
+        page,
+        totalPages,
+        totalRecords,
       });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.get(
+  "/api/admin/sources/:id",
+  requireAuth,
+  requireRole(UserRole.SUPER_ADMIN),
+  async (req, res, next) => {
+    try {
+      const id = z.coerce.number().int().positive().parse(req.params.id);
+      const [source] = await prisma.$queryRaw<Array<{
+        id: bigint; journalId: number; journalTitle: string; abbreviation: string | null;
+        printIssn: string | null; onlineIssn: string | null; subjectArea: string | null;
+        sourceType: string | null; publisherId: number | null; publisher: string | null;
+        indexedFromYear: number | null; website: string | null; email: string | null;
+      }>>(Prisma.sql`SELECT source.source_data_id id,source.journal_id journalId,TRIM(source.journal_title) journalTitle,source.abbreviation,source.print_issn printIssn,source.online_issn onlineIssn,source.subject_area subjectArea,COALESCE(source.source_type,'Journal') sourceType,source.publisher_id publisherId,COALESCE(publisher.publisher_name,source.publisher) publisher,source.indexed_from_year indexedFromYear,source.website,source.email FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE source.source_data_id=${id}`);
+      if (!source) return res.status(404).json({ message: "Source not found" });
+      return res.json({ source: { ...source, id: Number(source.id) } });
     } catch (error) {
       next(error);
     }
