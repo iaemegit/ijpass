@@ -206,6 +206,12 @@ body { font-size: 1rem; line-height: 1.65; }
 .internal-user-form h3, .credential-note h3, .users-table-card h3 { color: var(--navy); font-size: 1.05rem; font-weight: 800; margin-bottom: .8rem; }
 .internal-user-form label { color: #324d5a; display: block; font-size: .8rem; font-weight: 700; margin-bottom: .25rem; }
 .internal-user-form small { color: #75878e; font-size: .72rem; }
+.permission-fieldset { border: 1px solid #dbe7e4; border-radius: 12px; padding: 1rem; }
+.permission-fieldset legend { color: var(--navy); float: none; font-size: .9rem; font-weight: 800; margin: 0; padding: 0 .25rem; width: auto; }
+.permission-fieldset p { color: #687e87; font-size: .78rem; margin: 0 0 .75rem; }
+.permission-grid { display: grid; gap: .65rem 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.permission-grid .form-check { margin: 0; }
+.permission-grid .form-check-label { cursor: pointer; font-size: .82rem; margin: 0; }
 .password-create { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; }
 .password-create .form-control { border-radius: 8px 0 0 8px; }
 .password-create button { background: #eff6f4; border: 1px solid #d5dfdd; color: var(--teal); font-size: .8rem; font-weight: 700; padding: 0 .7rem; }
@@ -253,6 +259,7 @@ body { font-size: 1rem; line-height: 1.65; }
 .admin-table-search input::placeholder { color: #82949b; opacity: 1; }
 .admin-table-controls select { border-color: #d7e1de; color: #526b75; height: 36px; min-width: 145px; width: auto; }
 @media (max-width: 991px) { .manager-layout { grid-template-columns: 1fr; } }
+@media (max-width: 575px) { .permission-grid { grid-template-columns: 1fr; } }
 @media (max-width: 575px) { .manager-heading { align-items: flex-start; flex-direction: column; gap: .6rem; } }
 .admin-dashboard { background: #f1f5f3; display: grid; grid-template-columns: 270px 1fr; min-height: 100vh; }
 .admin-sidebar { background: #071f34; color: #fff; display: flex; flex-direction: column; height: 100vh; left: 0; overflow-y: auto; padding: 1.2rem .85rem; position: sticky; top: 0; }

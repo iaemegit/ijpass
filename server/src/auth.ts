@@ -25,6 +25,7 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
 }
 
 export const requireRole = (...roles: UserRole[]) => (req: AuthRequest, res: Response, next: NextFunction) => {
-  if (!req.auth || !roles.includes(req.auth.role)) return res.status(403).json({ message: 'You do not have permission to access this resource' });
+  const permittedInternalAdminRequest = req.auth?.role === 'INTERNAL_USER' && roles.includes('SUPER_ADMIN' as UserRole) && req.originalUrl.startsWith('/api/admin/');
+  if (!req.auth || (!roles.includes(req.auth.role) && !permittedInternalAdminRequest)) return res.status(403).json({ message: 'You do not have permission to access this resource' });
   next();
 };

@@ -37,6 +37,7 @@ export default function App() {
   const routes = navigation.flatMap(item => [item.path, ...(item.children?.map(child => child.path) || [])]).filter(path => path !== '/');
   return <Suspense fallback={<PageLoader/>}><Routes>
     <Route element={<ProtectedRoute roles={['SUPER_ADMIN', 'INTERNAL_USER']}/>}>
+      <Route path="/admin/internal_user/:userId/*" element={<PortalDashboard/>}/>
       <Route path="/admin" element={<Navigate to="/admin/dashboard" replace/>}/>
       <Route path="/admin/dashboard" element={<PortalDashboard/>}/>
       <Route path="/admin/internal-users" element={<PortalDashboard/>}/>

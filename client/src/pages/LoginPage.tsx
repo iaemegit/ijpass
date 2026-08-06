@@ -43,7 +43,7 @@ export default function LoginPage({ portal = 'staff' }: { portal?: 'staff' | 'pu
     try {
       const { data } = await api.post<{ token: string; user: PortalUser }>('/auth/login', values);
       saveSession(data.token, data.user, values.remember);
-      navigate(data.user.role === 'PUBLISHER' ? '/publisher' : '/admin');
+      navigate(data.user.role === 'PUBLISHER' ? '/publisher' : data.user.role === 'INTERNAL_USER' ? `/admin/internal_user/${data.user.id}/dashboard` : '/admin/dashboard');
     } catch (error) {
       if (error && typeof error === 'object' && 'response' in error) {
         const response = (error as { response?: { data?: { message?: string } } }).response;

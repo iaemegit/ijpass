@@ -42,6 +42,7 @@ model User {
   website      String?
   role         UserRole      @default(PUBLISHER)
   active       Boolean       @default(true)
+  permissions  Json?
   lastLoginAt  DateTime?
   createdAt    DateTime      @default(now())
   applications Application[]

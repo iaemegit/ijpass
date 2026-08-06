@@ -12,11 +12,24 @@ const schema = z.object({
   email: z.string().email('Enter a valid email'),
   organization: z.string().optional(),
   password: z.string().refine(value => !value || value.length >= 12, 'Use at least 12 characters'),
-  active: z.boolean()
+  active: z.boolean(),
+  permissions: z.array(z.string())
 });
 type Values = z.infer<typeof schema>;
-type InternalUser = { id: number; name: string; email: string; organization?: string | null; active: boolean; createdAt: string; lastLoginAt?: string | null };
-const emptyValues: Values = { name: '', email: '', organization: 'IJPAss', password: '', active: true };
+type InternalUser = { id: number; name: string; email: string; organization?: string | null; active: boolean; permissions?: string[]; createdAt: string; lastLoginAt?: string | null };
+const permissionOptions = [
+  ['journal-publishers', 'Source Publishers'],
+  ['sources', 'Resource List'],
+  ['manuscripts', 'Manuscript List'],
+  ['author-profiles', 'Author Profiles'],
+  ['affiliation-profiles', 'Affiliation Profiles'],
+  ['membership-categories', 'Membership Categories'],
+  ['members', 'Members List'],
+  ['author-merge-requests', 'Author Merge Requests'],
+  ['affiliation-merge-requests', 'Affiliation Merge Requests'],
+  ['applications', 'Membership Applications']
+] as const;
+const emptyValues: Values = { name: '', email: '', organization: 'IJPAss', password: '', active: true, permissions: [] };
 
 const makePassword = () => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!_-';
@@ -38,13 +51,14 @@ export default function InternalUserManager({ mode = 'list' }: { mode?: 'list' |
   const [sortBy, setSortBy] = useState('newest');
   const { register, handleSubmit, reset, setValue, watch, formState: { errors, isSubmitting } } = useForm<Values>({ resolver: zodResolver(schema), defaultValues: emptyValues });
   const password = watch('password');
+  const selectedPermissions = watch('permissions') || [];
   const loadUsers = useCallback(() => api.get<{ users: InternalUser[] }>('/admin/internal-users').then(({ data }) => setUsers(data.users)).catch(() => setRequestError('Unable to load internal users.')), []);
   useEffect(() => { void loadUsers(); }, [loadUsers]);
   useEffect(() => {
     if (mode !== 'form') return;
     const editId = Number(new URLSearchParams(location.search).get('edit'));
     const user = users.find(item => item.id === editId);
-    if (user) { setEditingId(user.id); setShowPassword(false); reset({ name: user.name, email: user.email, organization: user.organization || '', password: '', active: user.active }); }
+    if (user) { setEditingId(user.id); setShowPassword(false); reset({ name: user.name, email: user.email, organization: user.organization || '', password: '', active: user.active, permissions: Array.isArray(user.permissions) ? user.permissions : [] }); }
     else { setEditingId(null); setShowPassword(false); reset(emptyValues); }
   }, [location.search, mode, reset, users]);
 
@@ -83,7 +97,8 @@ export default function InternalUserManager({ mode = 'list' }: { mode?: 'list' |
       <div className="col-md-6"><label>Full name</label><input autoComplete="off" data-lpignore="true" className={`form-control ${errors.name ? 'is-invalid' : ''}`} {...register('name')}/><div className="invalid-feedback">{errors.name?.message}</div></div>
       <div className="col-md-6"><label>Email / Login ID</label><input type="email" autoComplete="off" data-lpignore="true" className={`form-control ${errors.email ? 'is-invalid' : ''}`} {...register('email')}/><div className="invalid-feedback">{errors.email?.message}</div></div>
       <div className="col-md-6"><label>Organization / Department</label><input autoComplete="off" data-lpignore="true" className="form-control" {...register('organization')}/></div>
-      <div className="col-md-6"><label>Account Status</label><select className="form-select" {...register('active', { setValueAs: value => value === 'true' })}><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+      <div className="col-md-6"><label>Account Status</label><select className="form-select" {...register('active', { setValueAs: value => value === true || value === 'true' })}><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+      <div className="col-12"><fieldset className="permission-fieldset"><legend>Permission to access</legend><p>Select the forms this Internal User may view and manage.</p><div className="permission-grid">{permissionOptions.map(([value, label]) => <div className="form-check" key={value}><input className="form-check-input" type="checkbox" value={value} id={`permission-${value}`} checked={selectedPermissions.includes(value)} onChange={event => setValue('permissions', event.target.checked ? [...new Set([...selectedPermissions, value])] : selectedPermissions.filter(permission => permission !== value), { shouldDirty: true, shouldValidate: true })}/><label className="form-check-label" htmlFor={`permission-${value}`}>{label}</label></div>)}</div></fieldset></div>
       <div className="col-12"><label>{editingId ? 'New password (optional)' : 'Temporary password'}</label><div className="password-create"><input type={showPassword ? 'text' : 'password'} autoComplete="new-password" data-lpignore="true" className={`form-control ${errors.password ? 'is-invalid' : ''}`} {...register('password')}/><button type="button" onClick={() => setShowPassword(value => !value)} title={showPassword ? 'Hide password' : 'Show password'} aria-label={showPassword ? 'Hide password' : 'Show password'}><i className={`bi ${showPassword ? 'bi-eye-slash' : 'bi-eye'}`}/></button><button type="button" onClick={copy} disabled={!password} title="Copy password" aria-label="Copy password"><i className="bi bi-copy"/></button><button type="button" onClick={generate}>Generate</button></div>{errors.password && <div className="field-error">{errors.password.message}</div>}<small>{editingId ? 'Leave blank to keep the existing password. Enter or generate a new password to reset it.' : 'Minimum 12 characters.'}</small></div>
       <div className="col-12">{requestError && <div className="alert alert-danger py-2">{requestError}</div>}{notice && <div className="alert alert-success py-2">{notice}</div>}<button className="btn btn-primary w-100" disabled={isSubmitting}>{isSubmitting ? 'Saving…' : editingId ? 'Update Internal User' : 'Create Internal User'}<i className="bi bi-person-check ms-2"/></button></div>
     </div></form><div className="credential-note"><i className="bi bi-key"/><h3>Credential security</h3><p>Passwords are stored only as bcrypt hashes. Disabled accounts cannot sign in.</p><ul><li>Leave the password blank while editing to keep it unchanged.</li><li>Send new credentials through a secure channel.</li><li>Use a unique password for every user.</li></ul></div></div>}

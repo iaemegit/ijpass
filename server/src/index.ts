@@ -172,6 +172,20 @@ const membershipApplicationFilePath = (storedName: string) => {
     throw new Error("Invalid application file path");
   return filePath;
 };
+const internalPermissionIds = [
+  "journal-publishers",
+  "sources",
+  "manuscripts",
+  "author-profiles",
+  "affiliation-profiles",
+  "membership-categories",
+  "members",
+  "author-merge-requests",
+  "affiliation-merge-requests",
+  "applications",
+] as const;
+type InternalPermission = (typeof internalPermissionIds)[number];
+const internalPermissionSchema = z.enum(internalPermissionIds);
 const internalUserSchema = z.object({
   name: z.string().min(2).max(100),
   email: z
@@ -181,6 +195,7 @@ const internalUserSchema = z.object({
   password: z.string().min(12).max(128),
   organization: z.string().max(150).optional(),
   active: z.boolean().default(true),
+  permissions: z.array(internalPermissionSchema).default([]),
 });
 const accountUpdateSchema = z.object({
   name: z.string().min(2).max(100),
@@ -191,6 +206,7 @@ const accountUpdateSchema = z.object({
   password: z.string().min(12).max(128).optional(),
   organization: z.string().max(150).optional(),
   active: z.boolean(),
+  permissions: z.array(internalPermissionSchema),
 });
 const websiteValue = z
   .string()
@@ -1987,6 +2003,7 @@ app.post("/api/auth/login", async (req, res, next) => {
         email: user.email,
         organization: user.organization,
         role: user.role,
+        permissions: Array.isArray(user.permissions) ? user.permissions : [],
       },
     });
   } catch (error) {
@@ -2005,11 +2022,46 @@ app.get("/api/auth/me", requireAuth, async (req: AuthRequest, res, next) => {
         organization: true,
         role: true,
         active: true,
+        permissions: true,
       },
     });
     if (!user?.active)
       return res.status(401).json({ message: "Account is inactive" });
     return res.json({ user });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const adminPermissionForPath = (requestPath: string): InternalPermission | null => {
+  const routes: Array<[string, InternalPermission]> = [
+    ["/journal-publishers", "journal-publishers"],
+    ["/sources", "sources"],
+    ["/manuscripts", "manuscripts"],
+    ["/author-profiles", "author-profiles"],
+    ["/affiliation-profiles", "affiliation-profiles"],
+    ["/membership-categories", "membership-categories"],
+    ["/members", "members"],
+    ["/author-merge-requests", "author-merge-requests"],
+    ["/affiliation-merge-requests", "affiliation-merge-requests"],
+    ["/membership-applications", "applications"],
+  ];
+  return routes.find(([prefix]) => requestPath === prefix || requestPath.startsWith(`${prefix}/`))?.[1] ?? null;
+};
+
+app.use("/api/admin", requireAuth, async (req: AuthRequest, res, next) => {
+  try {
+    if (req.auth?.role === UserRole.SUPER_ADMIN || req.path === "/summary") return next();
+    if (req.auth?.role !== UserRole.INTERNAL_USER)
+      return res.status(403).json({ message: "You do not have permission to access this resource" });
+    const requiredPermission = adminPermissionForPath(req.path);
+    if (!requiredPermission)
+      return res.status(403).json({ message: "You do not have permission to access this form" });
+    const account = await prisma.user.findUnique({ where: { id: req.auth.id }, select: { active: true, permissions: true } });
+    const permissions = Array.isArray(account?.permissions) ? account.permissions.filter((value): value is string => typeof value === "string") : [];
+    if (!account?.active || !permissions.includes(requiredPermission))
+      return res.status(403).json({ message: "You do not have permission to access this form" });
+    return next();
   } catch (error) {
     next(error);
   }
@@ -2049,6 +2101,7 @@ app.get(
           organization: true,
           role: true,
           active: true,
+          permissions: true,
           lastLoginAt: true,
           createdAt: true,
         },
@@ -4213,6 +4266,7 @@ app.post(
           organization: input.organization || "IJPAss",
           role: UserRole.INTERNAL_USER,
           active: input.active,
+          permissions: input.permissions,
         },
         select: {
           id: true,
@@ -4221,6 +4275,7 @@ app.post(
           organization: true,
           role: true,
           active: true,
+          permissions: true,
           createdAt: true,
         },
       });
@@ -4268,6 +4323,7 @@ app.put(
           email: true,
           organization: true,
           active: true,
+          permissions: true,
           createdAt: true,
         },
       });
