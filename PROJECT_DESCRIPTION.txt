@@ -75,3 +75,28 @@ Local URLs
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:4001
 - Elasticsearch: http://localhost:9200
+
+Server deployment locations
+- Application repository on the server: /home/vitpress/apps/ijpass
+- Public website files on the server: /home/vitpress/public_html/ijpass.com
+- PM2 process data on the server: /home/vitpress/.pm2
+- Uploaded member photos: /home/vitpress/apps/ijpass/server/uploads/members
+- Private membership application uploads: /home/vitpress/apps/ijpass/server/private-uploads/membership-applications
+
+Server database details
+- Database engine: MariaDB / MySQL
+- Application database name: ijpass
+- Journal and ranking database name: ijpass_journals
+- Application database user: ijpass_app@localhost
+- The app connects to the database through the DATABASE_URL value in server/.env
+- The database is managed by MariaDB on the server and is not stored inside the app repository
+- On this server, the logical database names are confirmed; the physical MariaDB data directory should be checked directly on the host before any file-level maintenance
+
+In server terminal - database location
+mysql -e "SHOW VARIABLES LIKE 'datadir';"
+
+ls -la /var/lib/mysql
+
+ls -la /var/lib/mysql/ijpass_journals
+
+

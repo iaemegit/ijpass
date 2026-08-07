@@ -13,6 +13,7 @@ async function main() {
       website VARCHAR(500) NULL,
       address TEXT NULL,
       country VARCHAR(100) NULL,
+      active TINYINT(1) NOT NULL DEFAULT 1,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       PRIMARY KEY (publisher_id),
@@ -28,6 +29,13 @@ async function main() {
       `);
       if (!Number(columns[0]?.columnCount || 0)) {
         await tx.$executeRawUnsafe(`ALTER TABLE ijpass_journals.sourcedata_tbl ADD COLUMN publisher_id INT NULL AFTER source_type`);
+      }
+      const publisherColumns = await tx.$queryRawUnsafe<Array<{ columnCount: bigint }>>(`
+        SELECT COUNT(*) AS columnCount FROM information_schema.columns
+        WHERE table_schema='ijpass_journals' AND table_name='publisher_tbl' AND column_name='active'
+      `);
+      if (!Number(publisherColumns[0]?.columnCount || 0)) {
+        await tx.$executeRawUnsafe(`ALTER TABLE ijpass_journals.publisher_tbl ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1 AFTER country`);
       }
       await tx.$executeRawUnsafe(`INSERT INTO ijpass_journals.publisher_tbl (publisher_name) VALUES ('IAEME Publication') ON DUPLICATE KEY UPDATE publisher_name = VALUES(publisher_name)`);
       await tx.$executeRawUnsafe(`UPDATE ijpass_journals.sourcedata_tbl SET publisher_id = (SELECT publisher_id FROM ijpass_journals.publisher_tbl WHERE publisher_name = 'IAEME Publication' LIMIT 1), publisher = 'IAEME Publication'`);

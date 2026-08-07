@@ -130,6 +130,34 @@ export async function suggestResourceTitles(query: string): Promise<string[] | n
   }
 }
 
+export async function suggestResourceTitlesOrAbbreviations(query: string): Promise<string[] | null> {
+  if (!elastic || query.trim().length < 2) return [];
+  try {
+    const escaped = query.trim().toLocaleLowerCase().replace(/[?*\\]/g, "\\$&");
+    const result = await elastic.search({
+      index: "ijpass-resources",
+      size: 8,
+      _source: ["title", "abbreviation"],
+      query: {
+        bool: {
+          should: [
+            { wildcard: { "title.keyword": { value: `*${escaped}*`, case_insensitive: true, boost: 3 } } },
+            { match_phrase_prefix: { title: { query: query.trim(), max_expansions: 50, boost: 2 } } },
+            { wildcard: { "abbreviation.keyword": { value: `*${escaped}*`, case_insensitive: true, boost: 6 } } },
+            { match_bool_prefix: { abbreviation: { query: query.trim(), boost: 5 } } },
+          ],
+          minimum_should_match: 1,
+        },
+      },
+    }, { requestTimeout: 3000 });
+    return [...new Set(result.hits.hits.map((hit) => {
+      const source = hit._source as { title?: string; abbreviation?: string } | undefined;
+      if (!source?.title) return "";
+      return source.title;
+    }).filter(Boolean))].slice(0, 8);
+  } catch { return null; }
+}
+
 export async function suggestIndexValues(
   index: string,
   query: string,

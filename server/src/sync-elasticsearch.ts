@@ -42,11 +42,12 @@ async function main() {
     Array<{
       id: bigint;
       title: string;
+      abbreviation: string | null;
       subject: string | null;
       publisher: string | null;
       type: string | null;
     }>
-  >`SELECT source.source_data_id id,source.journal_title title,source.subject_area subject,COALESCE(publisher.publisher_name,source.publisher) publisher,COALESCE(source.source_type,'Journal') type FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id`;
+  >`SELECT source.source_data_id id,source.journal_title title,source.abbreviation,source.subject_area subject,COALESCE(publisher.publisher_name,source.publisher) publisher,COALESCE(source.source_type,'Journal') type FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1`;
   const manuscripts = await prisma.$queryRaw<
     Array<{ journalId: bigint; title: string }>
   >`SELECT journal_id journalId,article_title title FROM ijpass_journals.manuscript_tbl WHERE article_title IS NOT NULL`;
@@ -116,6 +117,7 @@ async function main() {
   };
   await recreate(`${prefix}-resources`, {
     title: text,
+    abbreviation: text,
     subject: text,
     publisher: text,
     type: { type: "keyword" },
@@ -163,6 +165,7 @@ async function main() {
     resources.map((row) => ({
       id: Number(row.id),
       title: row.title,
+      abbreviation: row.abbreviation,
       subject: row.subject,
       publisher: row.publisher,
       type: row.type,

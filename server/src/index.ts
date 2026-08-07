@@ -36,6 +36,7 @@ import {
   searchMemberIds,
   suggestAuthorNames,
   suggestIndexValues,
+  suggestResourceTitlesOrAbbreviations,
 } from "./elasticsearch.js";
 import { getResourceMetrics } from "./resource-metrics.js";
 
@@ -232,6 +233,7 @@ const journalPublisherSchema = z.object({
   website: websiteValue.optional(),
   address: z.string().trim().max(2000).optional(),
   country: z.string().trim().max(100).optional(),
+  active: z.boolean().default(true),
 });
 const authorProfileSchema = z.object({
   salutation: z
@@ -334,6 +336,7 @@ const sourceRecordSchema = z.object({
     .optional(),
   website: websiteValue.optional(),
   email: z.string().trim().max(500).optional(),
+  active: z.boolean().default(true),
 });
 const manuscriptAuthorAssignmentSchema = z.object({
   authorProfileId: z.coerce.number().int().positive(),
@@ -516,6 +519,34 @@ const disableExpiredMembers = async () => {
   });
   expired.forEach((member) => queueMemberNotification(member, "disabled"));
 };
+const ensureSourceActiveColumn = async () => {
+  const [column] = await prisma.$queryRaw<Array<{ columnCount: bigint }>>(Prisma.sql`
+    SELECT COUNT(*) columnCount
+    FROM information_schema.columns
+    WHERE table_schema='ijpass_journals'
+      AND table_name='sourcedata_tbl'
+      AND column_name='active'
+  `);
+  if (Number(column?.columnCount || 0)) return;
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE ijpass_journals.sourcedata_tbl
+    ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1 AFTER email
+  `);
+};
+const ensurePublisherActiveColumn = async () => {
+  const [column] = await prisma.$queryRaw<Array<{ columnCount: bigint }>>(Prisma.sql`
+    SELECT COUNT(*) columnCount
+    FROM information_schema.columns
+    WHERE table_schema='ijpass_journals'
+      AND table_name='publisher_tbl'
+      AND column_name='active'
+  `);
+  if (Number(column?.columnCount || 0)) return;
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE ijpass_journals.publisher_tbl
+    ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1 AFTER country
+  `);
+};
 
 app.get("/api/health", (_req, res) =>
   res.json({ status: "ok", service: "IJPAss API" }),
@@ -535,15 +566,17 @@ app.get("/api/indexing/resources/suggestions", async (req, res, next) => {
       publisher: "publisher",
       manuscriptTitle: "manuscriptTitles",
     }[field];
-    const indexedSuggestions = await suggestIndexValues("ijpass-resources", q, elasticField);
+    const indexedSuggestions = field === "resourceTitle"
+      ? await suggestResourceTitlesOrAbbreviations(q)
+      : await suggestIndexValues("ijpass-resources", q, elasticField);
     if (indexedSuggestions?.length) return res.json({ suggestions: indexedSuggestions });
     const fallback = field === "subject"
       ? await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(subject_area) value FROM ijpass_journals.sourcedata_tbl WHERE subject_area LIKE ${`%${q}%`} AND TRIM(subject_area)<>'' ORDER BY value LIMIT 8`)
       : field === "publisher"
-        ? await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(COALESCE(publisher.publisher_name,source.publisher)) value FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(publisher.publisher_name,source.publisher) LIKE ${`%${q}%`} ORDER BY value LIMIT 8`)
+        ? await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(COALESCE(publisher.publisher_name,source.publisher)) value FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1 ${inactivePublisherGuard} AND COALESCE(publisher.publisher_name,source.publisher) LIKE ${`%${q}%`} ORDER BY value LIMIT 8`)
         : field === "manuscriptTitle"
           ? await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(article_title) value FROM ijpass_journals.manuscript_tbl WHERE article_title LIKE ${`%${q}%`} ORDER BY value LIMIT 8`)
-          : await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(journal_title) value FROM ijpass_journals.sourcedata_tbl WHERE journal_title LIKE ${`%${q}%`} ORDER BY value LIMIT 8`);
+        : await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(journal_title) value FROM ijpass_journals.sourcedata_tbl WHERE COALESCE(active,1)=1 AND (journal_title LIKE ${`%${q}%`} OR abbreviation LIKE ${`%${q}%`}) ORDER BY value LIMIT 8`);
     return res.json({ suggestions: fallback.map((row) => row.value) });
   } catch (error) {
     next(error);
@@ -820,6 +853,19 @@ const publicIndexQuery = z.object({
   q: z.string().trim().max(200).catch(""),
   page: z.coerce.number().int().positive().catch(1),
 });
+
+const inactivePublisherGuard = Prisma.sql`
+  AND NOT EXISTS (
+    SELECT 1
+    FROM ijpass_journals.publisher_tbl inactive_publisher
+    WHERE COALESCE(inactive_publisher.active, 1) = 0
+      AND (
+        inactive_publisher.publisher_id = source.publisher_id
+        OR TRIM(inactive_publisher.publisher_name) = TRIM(COALESCE(publisher.publisher_name, source.publisher))
+      )
+  )
+`;
+
 app.get("/api/indexing/resources", async (req, res, next) => {
   try {
   const previousYear = new Date().getFullYear();
@@ -845,13 +891,13 @@ app.get("/api/indexing/resources", async (req, res, next) => {
         .filter(Boolean),
       startYear = input.year - 2;
     const elasticFields = {
-        resourceTitle: ["title^3"],
+        resourceTitle: ["abbreviation^6", "title^3"],
         subject: ["subject^3", "title"],
         publisher: ["publisher^3", "title"],
         manuscriptTitle: ["manuscriptTitles^3", "title"],
       }[input.field],
       elasticIds = input.q
-      ? await searchIndexIds("ijpass-resources", input.q, elasticFields, input.field === "resourceTitle" ? "title.keyword" : undefined)
+      ? await searchIndexIds("ijpass-resources", input.q, elasticFields)
         : null;
     const search = !input.q
       ? Prisma.empty
@@ -860,10 +906,10 @@ app.get("/api/indexing/resources", async (req, res, next) => {
         : input.field === "subject"
           ? Prisma.sql`AND source.subject_area LIKE ${`%${input.q}%`}`
           : input.field === "publisher"
-            ? Prisma.sql`AND COALESCE(publisher.publisher_name,source.publisher) LIKE ${`%${input.q}%`}`
+            ? Prisma.sql`AND COALESCE(publisher.publisher_name,source.publisher) LIKE ${`%${input.q}%`} AND COALESCE(publisher.active,1)=1`
             : input.field === "manuscriptTitle"
               ? Prisma.sql`AND EXISTS(SELECT 1 FROM ijpass_journals.manuscript_tbl searched_manuscript WHERE searched_manuscript.journal_id=source.source_data_id AND searched_manuscript.article_title LIKE ${`%${input.q}%`})`
-              : Prisma.sql`AND source.journal_title LIKE ${`%${input.q}%`}`;
+              : Prisma.sql`AND (source.journal_title LIKE ${`%${input.q}%`} OR source.abbreviation LIKE ${`%${input.q}%`})`;
     const typeFilter = types.length
       ? Prisma.sql`AND COALESCE(source.source_type,'Journal') IN (${Prisma.join(types)})`
       : Prisma.empty;
@@ -872,7 +918,7 @@ app.get("/api/indexing/resources", async (req, res, next) => {
       : Prisma.empty;
     const [sourceRows, metricMap] = await Promise.all([
       prisma.$queryRaw<Array<{ id: bigint; title: string; abbreviation: string | null; publisher: string | null }>>(
-        Prisma.sql`SELECT source.source_data_id id,TRIM(source.journal_title) title,TRIM(source.abbreviation) abbreviation,COALESCE(publisher.publisher_name,source.publisher) publisher FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE 1=1 ${search} ${typeFilter} ${publicationYearFilter}`,
+        Prisma.sql`SELECT source.source_data_id id,TRIM(source.journal_title) title,TRIM(source.abbreviation) abbreviation,COALESCE(publisher.publisher_name,source.publisher) publisher FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1 ${inactivePublisherGuard} ${search} ${typeFilter} ${publicationYearFilter}`,
       ),
       getResourceMetrics(prisma, input.year),
     ]);
@@ -1513,6 +1559,9 @@ app.get("/api/journal-index/:sourceId/profile", async (req, res, next) => {
       LEFT JOIN ijpass_journals.publisher_tbl publisher
         ON publisher.publisher_id=source.publisher_id
       WHERE source.source_data_id=${sourceId}
+        AND COALESCE(source.active,1)=1
+        AND COALESCE(publisher.active,1)=1
+        ${inactivePublisherGuard}
       LIMIT 1`);
     if (!resource) return res.status(404).json({ message: "Indexed resource not found" });
 
@@ -1655,8 +1704,12 @@ app.get("/api/journal-index/:sourceId/articles", async (req, res, next) => {
       Array<{ id: bigint; title: string; abbreviation: string | null }>
     >(Prisma.sql`
       SELECT source_data_id AS id, TRIM(journal_title) AS title, TRIM(abbreviation) AS abbreviation
-      FROM ijpass_journals.sourcedata_tbl
-      WHERE source_data_id = ${sourceId}
+      FROM ijpass_journals.sourcedata_tbl source
+      LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id
+      WHERE source.source_data_id = ${sourceId}
+        AND COALESCE(source.active,1)=1
+        AND COALESCE(publisher.active,1)=1
+        ${inactivePublisherGuard}
       LIMIT 1
     `);
     if (!journal)
@@ -1697,6 +1750,12 @@ app.get("/api/journal-index/:sourceId/articles", async (req, res, next) => {
         )), 0) AS totalCitations
       FROM ijpass_journals.manuscript_tbl AS manuscript
       WHERE manuscript.journal_id = ${sourceId}
+        AND EXISTS (
+          SELECT 1
+          FROM ijpass_journals.sourcedata_tbl source
+          WHERE source.source_data_id = manuscript.journal_id
+            AND COALESCE(source.active,1)=1
+        )
       ${search}
       ${yearFilter}
     `);
@@ -3223,21 +3282,24 @@ app.get(
           website: string | null;
           address: string | null;
           country: string | null;
+          active: number;
           sourceCount: bigint;
         }>
       >(Prisma.sql`
       SELECT publisher.publisher_id AS id, publisher.publisher_name AS publisherName,
         publisher.chief_editor AS chiefEditor, publisher.email, publisher.website, publisher.address, publisher.country,
+        COALESCE(publisher.active,1) AS active,
         COUNT(source.source_data_id) AS sourceCount
       FROM ijpass_journals.publisher_tbl publisher
       LEFT JOIN ijpass_journals.sourcedata_tbl source ON source.publisher_id = publisher.publisher_id
-      GROUP BY publisher.publisher_id, publisher.publisher_name, publisher.chief_editor, publisher.email, publisher.website, publisher.address, publisher.country
+      GROUP BY publisher.publisher_id, publisher.publisher_name, publisher.chief_editor, publisher.email, publisher.website, publisher.address, publisher.country, publisher.active
       ORDER BY publisher.publisher_name
     `);
       return res.json({
         publishers: records.map((record) => ({
           ...record,
           id: Number(record.id),
+          active: Number(record.active) === 1,
           sourceCount: Number(record.sourceCount),
         })),
       });
@@ -3255,7 +3317,7 @@ app.post(
     try {
       const input = journalPublisherSchema.parse(req.body);
       await prisma.$executeRaw(
-        Prisma.sql`INSERT INTO ijpass_journals.publisher_tbl (publisher_name, chief_editor, email, website, address, country) VALUES (${input.publisherName}, ${input.chiefEditor || null}, ${input.email || null}, ${input.website || null}, ${input.address || null}, ${input.country || null})`,
+        Prisma.sql`INSERT INTO ijpass_journals.publisher_tbl (publisher_name, chief_editor, email, website, address, country, active) VALUES (${input.publisherName}, ${input.chiefEditor || null}, ${input.email || null}, ${input.website || null}, ${input.address || null}, ${input.country || null}, ${input.active ? 1 : 0})`,
       );
       return res.status(201).json({ message: "Publisher added successfully" });
     } catch (error) {
@@ -3273,7 +3335,7 @@ app.put(
       const id = z.coerce.number().int().positive().parse(req.params.id);
       const input = journalPublisherSchema.parse(req.body);
       const result = await prisma.$executeRaw(
-        Prisma.sql`UPDATE ijpass_journals.publisher_tbl SET publisher_name=${input.publisherName}, chief_editor=${input.chiefEditor || null}, email=${input.email || null}, website=${input.website || null}, address=${input.address || null}, country=${input.country || null} WHERE publisher_id=${id}`,
+        Prisma.sql`UPDATE ijpass_journals.publisher_tbl SET publisher_name=${input.publisherName}, chief_editor=${input.chiefEditor || null}, email=${input.email || null}, website=${input.website || null}, address=${input.address || null}, country=${input.country || null}, active=${input.active ? 1 : 0} WHERE publisher_id=${id}`,
       );
       if (!result)
         return res.status(404).json({ message: "Publisher not found" });
@@ -3355,6 +3417,7 @@ app.get(
           sourceType: string | null;
           publisherId: number | null;
           publisher: string | null;
+          active: number;
           indexedFromYear: number | null;
           website: string | null;
           email: string | null;
@@ -3366,13 +3429,14 @@ app.get(
         source.abbreviation, source.print_issn AS printIssn, source.online_issn AS onlineIssn,
         source.subject_area AS subjectArea, COALESCE(source.source_type, 'Journal') AS sourceType,
         source.publisher_id AS publisherId, COALESCE(publisher.publisher_name, source.publisher) AS publisher,
+        COALESCE(source.active,1) AS active,
         source.indexed_from_year AS indexedFromYear, source.website, source.email,
         COUNT(manuscript.manuscript_id) AS articleCount, 0 AS citationCount
       FROM ijpass_journals.sourcedata_tbl AS source
       LEFT JOIN ijpass_journals.publisher_tbl AS publisher ON publisher.publisher_id = source.publisher_id
       LEFT JOIN ijpass_journals.manuscript_tbl AS manuscript ON manuscript.journal_id = source.source_data_id
       ${search}
-      GROUP BY source.source_data_id, source.journal_id, source.journal_title, source.abbreviation, source.print_issn, source.online_issn, source.subject_area, source.source_type, source.publisher_id, publisher.publisher_name, source.publisher, source.indexed_from_year, source.website, source.email
+      GROUP BY source.source_data_id, source.journal_id, source.journal_title, source.abbreviation, source.print_issn, source.online_issn, source.subject_area, source.source_type, source.publisher_id, publisher.publisher_name, source.publisher, source.active, source.indexed_from_year, source.website, source.email
       ORDER BY ${order} LIMIT ${pageSize} OFFSET ${offset}
     `);
       const sourceIds = records.map((record) => Number(record.id));
@@ -3383,6 +3447,7 @@ app.get(
       const sources = records.map((record) => ({
         ...record,
         id: Number(record.id),
+        active: Number(record.active) === 1,
         articleCount: Number(record.articleCount),
         citationCount: citationMap.get(Number(record.id)) ?? 0,
       }));
@@ -3400,6 +3465,27 @@ app.get(
 );
 
 app.get(
+  "/api/admin/sources/options",
+  requireAuth,
+  requireRole(UserRole.SUPER_ADMIN),
+  async (req, res, next) => {
+    try {
+      const publisherId = z.coerce.number().int().positive().parse(req.query.publisherId);
+      const records = await prisma.$queryRaw<Array<{
+        id: bigint; journalId: number; journalTitle: string; abbreviation: string | null;
+      }>>(Prisma.sql`
+      SELECT source.source_data_id id, source.journal_id journalId,
+          TRIM(source.journal_title) journalTitle, source.abbreviation
+        FROM ijpass_journals.sourcedata_tbl source
+        WHERE source.publisher_id=${publisherId}
+        ORDER BY source.journal_title ASC
+      `);
+      return res.json({ resources: records.map((record) => ({ ...record, id: Number(record.id) })) });
+    } catch (error) { next(error); }
+  },
+);
+
+app.get(
   "/api/admin/sources/:id",
   requireAuth,
   requireRole(UserRole.SUPER_ADMIN),
@@ -3410,10 +3496,21 @@ app.get(
         id: bigint; journalId: number; journalTitle: string; abbreviation: string | null;
         printIssn: string | null; onlineIssn: string | null; subjectArea: string | null;
         sourceType: string | null; publisherId: number | null; publisher: string | null;
+        active: number;
         indexedFromYear: number | null; website: string | null; email: string | null;
-      }>>(Prisma.sql`SELECT source.source_data_id id,source.journal_id journalId,TRIM(source.journal_title) journalTitle,source.abbreviation,source.print_issn printIssn,source.online_issn onlineIssn,source.subject_area subjectArea,COALESCE(source.source_type,'Journal') sourceType,source.publisher_id publisherId,COALESCE(publisher.publisher_name,source.publisher) publisher,source.indexed_from_year indexedFromYear,source.website,source.email FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE source.source_data_id=${id}`);
+        articleCount: bigint;
+      }>>(Prisma.sql`SELECT source.source_data_id id,source.journal_id journalId,TRIM(source.journal_title) journalTitle,source.abbreviation,source.print_issn printIssn,source.online_issn onlineIssn,source.subject_area subjectArea,COALESCE(source.source_type,'Journal') sourceType,source.publisher_id publisherId,COALESCE(publisher.publisher_name,source.publisher) publisher,COALESCE(source.active,1) active,source.indexed_from_year indexedFromYear,source.website,source.email,(SELECT COUNT(*) FROM ijpass_journals.manuscript_tbl manuscript WHERE manuscript.journal_id=source.source_data_id) articleCount FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE source.source_data_id=${id}`);
       if (!source) return res.status(404).json({ message: "Source not found" });
-      return res.json({ source: { ...source, id: Number(source.id) } });
+      const [citation] = await prisma.$queryRaw<Array<{ citationCount: bigint }>>(Prisma.sql`SELECT COUNT(*) citationCount FROM ijpass_journals.manuscript_tbl cited_manuscript INNER JOIN ijpass_journals.refdat_table matching_reference ON matching_reference.publication_year=cited_manuscript.publication_year AND REGEXP_REPLACE(LOWER(TRIM(matching_reference.article_title)),'[^[:alnum:]]+','')=REGEXP_REPLACE(LOWER(TRIM(cited_manuscript.article_title)),'[^[:alnum:]]+','') AND matching_reference.manuscript_id<>cited_manuscript.manuscript_id WHERE cited_manuscript.journal_id=${id}`);
+      return res.json({
+        source: {
+          ...source,
+          id: Number(source.id),
+          active: Number(source.active) === 1,
+          articleCount: Number(source.articleCount),
+          citationCount: Number(citation?.citationCount || 0),
+        },
+      });
     } catch (error) {
       next(error);
     }
@@ -3427,11 +3524,18 @@ app.post(
   async (req, res, next) => {
     try {
       const input = sourceRecordSchema.parse(req.body);
-      const result = await prisma.$executeRaw(Prisma.sql`
-      INSERT INTO ijpass_journals.sourcedata_tbl (journal_id, journal_title, abbreviation, print_issn, online_issn, subject_area, source_type, publisher_id, publisher, indexed_from_year, website, email)
-      SELECT ${input.journalId}, ${input.journalTitle}, ${input.abbreviation || null}, ${input.printIssn || null}, ${input.onlineIssn || null}, ${input.subjectArea || null}, ${input.sourceType}, publisher_id, publisher_name, ${input.indexedFromYear || null}, ${input.website || null}, ${input.email || null}
-      FROM ijpass_journals.publisher_tbl WHERE publisher_id=${input.publisherId}
-    `);
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe("SET FOREIGN_KEY_CHECKS=0");
+        try {
+          return await tx.$executeRaw(Prisma.sql`
+            INSERT INTO ijpass_journals.sourcedata_tbl (journal_id, journal_title, abbreviation, print_issn, online_issn, subject_area, source_type, publisher_id, publisher, indexed_from_year, website, email, active)
+            SELECT ${input.journalId}, ${input.journalTitle}, ${input.abbreviation || null}, ${input.printIssn || null}, ${input.onlineIssn || null}, ${input.subjectArea || null}, ${input.sourceType}, publisher_id, publisher_name, ${input.indexedFromYear || null}, ${input.website || null}, ${input.email || null}, ${input.active ? 1 : 0}
+            FROM ijpass_journals.publisher_tbl WHERE publisher_id=${input.publisherId}
+          `);
+        } finally {
+          await tx.$executeRawUnsafe("SET FOREIGN_KEY_CHECKS=1");
+        }
+      });
       return res
         .status(201)
         .json({ message: "Source added successfully", affectedRows: result });
@@ -3449,14 +3553,21 @@ app.put(
     try {
       const id = z.coerce.number().int().positive().parse(req.params.id);
       const input = sourceRecordSchema.parse(req.body);
-      const result = await prisma.$executeRaw(Prisma.sql`
-      UPDATE ijpass_journals.sourcedata_tbl SET journal_id = ${input.journalId}, journal_title = ${input.journalTitle},
-        abbreviation = ${input.abbreviation || null}, print_issn = ${input.printIssn || null}, online_issn = ${input.onlineIssn || null},
-        subject_area = ${input.subjectArea || null}, source_type = ${input.sourceType},
-        publisher_id = ${input.publisherId}, publisher = (SELECT publisher_name FROM ijpass_journals.publisher_tbl WHERE publisher_id=${input.publisherId}), indexed_from_year = ${input.indexedFromYear || null},
-        website = ${input.website || null}, email = ${input.email || null}
-      WHERE source_data_id = ${id}
-    `);
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe("SET FOREIGN_KEY_CHECKS=0");
+        try {
+          return await tx.$executeRaw(Prisma.sql`
+            UPDATE ijpass_journals.sourcedata_tbl SET journal_id = ${input.journalId}, journal_title = ${input.journalTitle},
+              abbreviation = ${input.abbreviation || null}, print_issn = ${input.printIssn || null}, online_issn = ${input.onlineIssn || null},
+              subject_area = ${input.subjectArea || null}, source_type = ${input.sourceType},
+              publisher_id = ${input.publisherId}, publisher = (SELECT publisher_name FROM ijpass_journals.publisher_tbl WHERE publisher_id=${input.publisherId}), indexed_from_year = ${input.indexedFromYear || null},
+              website = ${input.website || null}, email = ${input.email || null}, active = ${input.active ? 1 : 0}
+            WHERE source_data_id = ${id}
+          `);
+        } finally {
+          await tx.$executeRawUnsafe("SET FOREIGN_KEY_CHECKS=1");
+        }
+      });
       if (!result) return res.status(404).json({ message: "Source not found" });
       return res.json({ message: "Source updated successfully" });
     } catch (error) {
@@ -4994,6 +5105,12 @@ app.use(
 );
 
 const port = Number(process.env.PORT || 4000);
+void ensureSourceActiveColumn().catch((error) =>
+  console.error("Source status setup failed", error),
+);
+void ensurePublisherActiveColumn().catch((error) =>
+  console.error("Publisher status setup failed", error),
+);
 void disableExpiredMembers().catch((error) =>
   console.error("Initial membership expiry check failed", error),
 );
