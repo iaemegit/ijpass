@@ -38,6 +38,7 @@ export default function SourceManager({ mode = 'list' }: { mode?: 'list' | 'form
   const [requestError, setRequestError] = useState('');
   const [notice, setNotice] = useState('');
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [exporting, setExporting] = useState<'xlsx' | 'pdf' | ''>('');
   const [totalRecords, setTotalRecords] = useState(0);
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<Values>({ resolver: zodResolver(schema), defaultValues: emptyValues });
 
@@ -94,7 +95,29 @@ export default function SourceManager({ mode = 'list' }: { mode?: 'list' | 'form
     finally { setDeletingId(null); }
   };
 
-  return <section><div className="manager-heading"><div><span className="eyebrow">Super Admin controls</span><h2>{mode === 'form' ? editingId ? 'Edit Resource' : 'Add New Resource' : 'Resource List'}</h2><p>Manage resource titles used by the journal index.</p></div>{mode === 'list' ? <button className="btn btn-primary" onClick={() => navigate('/admin/sources/addnew')}><i className="bi bi-plus-lg me-2"/>Add New</button> : <button className="btn btn-outline-secondary" onClick={() => navigate('/admin/sources')}><i className="bi bi-arrow-left me-2"/>Back to list</button>}</div>
+  const downloadAll = async (format: 'xlsx' | 'pdf') => {
+    setExporting(format); setRequestError(''); setNotice('');
+    try {
+      const response = await api.get<Blob>(`/admin/sources/export/${format}`, { responseType: 'blob' });
+      const disposition = String(response.headers['content-disposition'] || '');
+      const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || `ijpass-resources.${format}`;
+      const downloadUrl = URL.createObjectURL(response.data);
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      setNotice(`All resources downloaded as ${format.toUpperCase()}.`);
+    } catch (error) {
+      setRequestError((error as { response?: { data?: { message?: string } } }).response?.data?.message || `Unable to create the ${format.toUpperCase()} resource report.`);
+    } finally {
+      setExporting('');
+    }
+  };
+
+  return <section><div className="manager-heading"><div><span className="eyebrow">Super Admin controls</span><h2>{mode === 'form' ? editingId ? 'Edit Resource' : 'Add New Resource' : 'Resource List'}</h2><p>Manage resource titles used by the journal index.</p></div>{mode === 'list' ? <div className="d-flex flex-wrap justify-content-end gap-2"><button type="button" className="btn btn-outline-success" onClick={() => downloadAll('xlsx')} disabled={!!exporting} title="Download all resources as an Excel workbook">{exporting === 'xlsx' ? <span className="spinner-border spinner-border-sm me-2"/> : <i className="bi bi-file-earmark-excel me-2"/>}Download XLSX</button><button type="button" className="btn btn-outline-danger" onClick={() => downloadAll('pdf')} disabled={!!exporting} title="Download all resources as a formatted PDF">{exporting === 'pdf' ? <span className="spinner-border spinner-border-sm me-2"/> : <i className="bi bi-file-earmark-pdf me-2"/>}Download PDF</button><button className="btn btn-primary" onClick={() => navigate('/admin/sources/addnew')} disabled={!!exporting}><i className="bi bi-plus-lg me-2"/>Add New</button></div> : <button className="btn btn-outline-secondary" onClick={() => navigate('/admin/sources')}><i className="bi bi-arrow-left me-2"/>Back to list</button>}</div>
     {mode === 'form' && <div className="admin-form-card"><div className="admin-panel-heading"><span className="form-icon"><i className="bi bi-journal-plus"/></span><div><h2>{editingId ? 'Edit Resource Record' : 'Create Resource Record'}</h2><p>Enter the resource, publisher, indexing, and contact information.</p></div></div><form onSubmit={handleSubmit(submit)} noValidate autoComplete="off"><div className="row g-3">
       <div className="col-md-4"><label>Journal ID</label><input className={`form-control ${errors.journalId ? 'is-invalid' : ''}`} autoComplete="off" data-lpignore="true" {...register('journalId')}/><div className="invalid-feedback">{errors.journalId?.message}</div></div>
       <div className="col-md-8"><label>Resource Title</label><input className={`form-control ${errors.journalTitle ? 'is-invalid' : ''}`} autoComplete="off" data-lpignore="true" {...register('journalTitle')}/><div className="invalid-feedback">{errors.journalTitle?.message}</div></div>

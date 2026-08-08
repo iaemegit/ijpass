@@ -50,7 +50,7 @@ async function main() {
   >`SELECT source.source_data_id id,source.journal_title title,source.abbreviation,source.subject_area subject,COALESCE(publisher.publisher_name,source.publisher) publisher,COALESCE(source.source_type,'Journal') type FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1`;
   const manuscripts = await prisma.$queryRaw<
     Array<{ journalId: bigint; title: string }>
-  >`SELECT journal_id journalId,article_title title FROM ijpass_journals.manuscript_tbl WHERE article_title IS NOT NULL`;
+  >`SELECT manuscript.journal_id journalId,manuscript.article_title title FROM ijpass_journals.manuscript_tbl manuscript INNER JOIN ijpass_journals.sourcedata_tbl source ON source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE manuscript.article_title IS NOT NULL AND COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1`;
   const manuscriptMap = new Map<string, string[]>();
   for (const row of manuscripts) {
     const key = String(row.journalId),
@@ -68,7 +68,7 @@ async function main() {
       country: string | null;
       papers: bigint;
     }>
-  >`SELECT profile.author_profile_id id,profile.salutation,profile.author_name name,profile.orcid,MAX(affiliation.university_company) affiliation,MAX(affiliation.country) country,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.author_profile_tbl profile LEFT JOIN ijpass_journals.author_affiliation_tbl link ON link.author_profile_id=profile.author_profile_id AND link.is_current=1 LEFT JOIN ijpass_journals.affiliationdata_tbl affiliation ON affiliation.affiliation_id=link.affiliation_id LEFT JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_profile_id=profile.author_profile_id GROUP BY profile.author_profile_id,profile.salutation,profile.author_name,profile.orcid`;
+  >`SELECT profile.author_profile_id id,profile.salutation,profile.author_name name,profile.orcid,MAX(affiliation.university_company) affiliation,MAX(affiliation.country) country,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.author_profile_tbl profile LEFT JOIN ijpass_journals.author_affiliation_tbl link ON link.author_profile_id=profile.author_profile_id AND link.is_current=1 LEFT JOIN ijpass_journals.affiliationdata_tbl affiliation ON affiliation.affiliation_id=link.affiliation_id INNER JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_profile_id=profile.author_profile_id INNER JOIN ijpass_journals.manuscript_tbl manuscript ON manuscript.manuscript_id=authorship.manuscript_id INNER JOIN ijpass_journals.sourcedata_tbl source ON source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1 GROUP BY profile.author_profile_id,profile.salutation,profile.author_name,profile.orcid`;
   const affiliations = await prisma.$queryRaw<
     Array<{
       id: bigint;
@@ -79,7 +79,7 @@ async function main() {
       authors: bigint;
       papers: bigint;
     }>
-  >`SELECT affiliation.affiliation_id id,affiliation.university_company name,affiliation.city_territory cityTerritory,affiliation.address,affiliation.country,COUNT(DISTINCT authorship.author_profile_id) authors,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.affiliationdata_tbl affiliation LEFT JOIN ijpass_journals.authordata_tbl source_author ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company))) IN (LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company))),LOWER(TRIM(LEADING ', ' FROM TRIM(CONCAT(affiliation.university_company,IF(TRIM(COALESCE(affiliation.city_territory,''))='','',CONCAT(', ',affiliation.city_territory))))))) LEFT JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_data_id=source_author.author_data_id GROUP BY affiliation.affiliation_id,affiliation.university_company,affiliation.city_territory,affiliation.address,affiliation.country`;
+  >`SELECT affiliation.affiliation_id id,affiliation.university_company name,affiliation.city_territory cityTerritory,affiliation.address,affiliation.country,COUNT(DISTINCT authorship.author_profile_id) authors,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.affiliationdata_tbl affiliation INNER JOIN ijpass_journals.authordata_tbl source_author ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company))) IN (LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company))),LOWER(TRIM(LEADING ', ' FROM TRIM(CONCAT_WS(', ',affiliation.university_company,NULLIF(TRIM(COALESCE(affiliation.city_territory,'')),'')))))) INNER JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_data_id=source_author.author_data_id INNER JOIN ijpass_journals.manuscript_tbl manuscript ON manuscript.manuscript_id=authorship.manuscript_id INNER JOIN ijpass_journals.sourcedata_tbl source ON source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1 GROUP BY affiliation.affiliation_id,affiliation.university_company,affiliation.city_territory,affiliation.address,affiliation.country`;
   const countries = await prisma.$queryRaw<
     Array<{
       country: string;
@@ -87,7 +87,7 @@ async function main() {
       authors: bigint;
       papers: bigint;
     }>
-  >`SELECT affiliation.country,COUNT(DISTINCT affiliation.affiliation_id) affiliations,COUNT(DISTINCT authorship.author_profile_id) authors,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.affiliationdata_tbl affiliation LEFT JOIN ijpass_journals.authordata_tbl source_author ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company)))=LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company))) LEFT JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_data_id=source_author.author_data_id WHERE TRIM(affiliation.country)<>'' GROUP BY affiliation.country`;
+  >`SELECT affiliation.country,COUNT(DISTINCT affiliation.affiliation_id) affiliations,COUNT(DISTINCT authorship.author_profile_id) authors,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.affiliationdata_tbl affiliation INNER JOIN ijpass_journals.authordata_tbl source_author ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company)))=LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company))) INNER JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_data_id=source_author.author_data_id INNER JOIN ijpass_journals.manuscript_tbl manuscript ON manuscript.manuscript_id=authorship.manuscript_id INNER JOIN ijpass_journals.sourcedata_tbl source ON source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE TRIM(affiliation.country)<>'' AND COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1 GROUP BY affiliation.country`;
   const manuscriptRecords = await prisma.$queryRaw<Array<{
     id: bigint;
     sourceId: bigint;
@@ -102,8 +102,10 @@ async function main() {
       manuscript.article_code articleCode,manuscript.doi,manuscript.publication_year publicationYear
     FROM ijpass_journals.manuscript_tbl manuscript
     INNER JOIN ijpass_journals.sourcedata_tbl source ON source.source_data_id=manuscript.journal_id
+    LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id
     LEFT JOIN ijpass_journals.manuscript_author_tbl link ON link.manuscript_id=manuscript.manuscript_id
     LEFT JOIN ijpass_journals.authordata_tbl author ON author.author_data_id=link.author_data_id
+    WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1
     GROUP BY manuscript.manuscript_id,manuscript.journal_id,source.journal_title,manuscript.article_title,
       manuscript.article_code,manuscript.doi,manuscript.publication_year`;
   const members = await prisma.member.findMany({

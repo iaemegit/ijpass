@@ -8,3 +8,4 @@ private-uploads/
 .DS_Store
 *.tsbuildinfo
 .local/
+backups/

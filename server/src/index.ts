@@ -25,6 +25,8 @@ import path from "node:path";
 import { mkdirSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
+import ExcelJS from "exceljs";
+import PDFDocument from "pdfkit";
 import {
   elasticHealth,
   removeAffiliationSearchDocuments,
@@ -34,9 +36,6 @@ import {
   searchIndexIds,
   searchManuscriptIds,
   searchMemberIds,
-  suggestAuthorNames,
-  suggestIndexValues,
-  suggestResourceTitlesOrAbbreviations,
 } from "./elasticsearch.js";
 import { getResourceMetrics } from "./resource-metrics.js";
 
@@ -560,23 +559,13 @@ app.get("/api/indexing/resources/suggestions", async (req, res, next) => {
       q: z.string().trim().min(2).max(150),
       field: z.enum(["resourceTitle", "subject", "publisher", "manuscriptTitle"]).catch("resourceTitle"),
     }).parse(req.query);
-    const elasticField = {
-      resourceTitle: "title",
-      subject: "subject",
-      publisher: "publisher",
-      manuscriptTitle: "manuscriptTitles",
-    }[field];
-    const indexedSuggestions = field === "resourceTitle"
-      ? await suggestResourceTitlesOrAbbreviations(q)
-      : await suggestIndexValues("ijpass-resources", q, elasticField);
-    if (indexedSuggestions?.length) return res.json({ suggestions: indexedSuggestions });
     const fallback = field === "subject"
-      ? await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(subject_area) value FROM ijpass_journals.sourcedata_tbl WHERE subject_area LIKE ${`%${q}%`} AND TRIM(subject_area)<>'' ORDER BY value LIMIT 8`)
+      ? await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(source.subject_area) value FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1 ${inactivePublisherGuard} AND source.subject_area LIKE ${`%${q}%`} AND TRIM(source.subject_area)<>'' ORDER BY value LIMIT 8`)
       : field === "publisher"
         ? await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(COALESCE(publisher.publisher_name,source.publisher)) value FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1 ${inactivePublisherGuard} AND COALESCE(publisher.publisher_name,source.publisher) LIKE ${`%${q}%`} ORDER BY value LIMIT 8`)
-        : field === "manuscriptTitle"
-          ? await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(article_title) value FROM ijpass_journals.manuscript_tbl WHERE article_title LIKE ${`%${q}%`} ORDER BY value LIMIT 8`)
-        : await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(journal_title) value FROM ijpass_journals.sourcedata_tbl WHERE COALESCE(active,1)=1 AND (journal_title LIKE ${`%${q}%`} OR abbreviation LIKE ${`%${q}%`}) ORDER BY value LIMIT 8`);
+      : field === "manuscriptTitle"
+          ? await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(manuscript.article_title) value FROM ijpass_journals.manuscript_tbl manuscript INNER JOIN ijpass_journals.sourcedata_tbl visible_source ON visible_source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl visible_publisher ON visible_publisher.publisher_id=visible_source.publisher_id WHERE COALESCE(visible_source.active,1)=1 AND COALESCE(visible_publisher.active,1)=1 ${inactiveVisiblePublisherGuard} AND manuscript.article_title LIKE ${`%${q}%`} ORDER BY value LIMIT 8`)
+        : await prisma.$queryRaw<Array<{ value: string }>>(Prisma.sql`SELECT DISTINCT TRIM(source.journal_title) value FROM ijpass_journals.sourcedata_tbl source LEFT JOIN ijpass_journals.publisher_tbl publisher ON publisher.publisher_id=source.publisher_id WHERE COALESCE(source.active,1)=1 AND COALESCE(publisher.active,1)=1 ${inactivePublisherGuard} AND (source.journal_title LIKE ${`%${q}%`} OR source.abbreviation LIKE ${`%${q}%`}) ORDER BY value LIMIT 8`);
     return res.json({ suggestions: fallback.map((row) => row.value) });
   } catch (error) {
     next(error);
@@ -585,11 +574,22 @@ app.get("/api/indexing/resources/suggestions", async (req, res, next) => {
 app.get("/api/indexing/authors/suggestions", async (req, res, next) => {
   try {
     const { q } = z.object({ q: z.string().trim().min(2).max(150) }).parse(req.query);
-    const indexedSuggestions = await suggestAuthorNames(q);
-    if (indexedSuggestions?.length)
-      return res.json({ suggestions: indexedSuggestions });
     const rows = await prisma.$queryRaw<Array<{ name: string }>>(
-      Prisma.sql`SELECT DISTINCT TRIM(author_name) name FROM ijpass_journals.author_profile_tbl WHERE LOWER(author_name) LIKE LOWER(${`%${q}%`}) ORDER BY name LIMIT 8`,
+      Prisma.sql`SELECT DISTINCT TRIM(profile.author_name) name
+        FROM ijpass_journals.author_profile_tbl profile
+        INNER JOIN ijpass_journals.manuscript_author_tbl authorship
+          ON authorship.author_profile_id = profile.author_profile_id
+        INNER JOIN ijpass_journals.manuscript_tbl manuscript
+          ON manuscript.manuscript_id = authorship.manuscript_id
+        INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+          ON visible_source.source_data_id = manuscript.journal_id
+        LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+          ON visible_publisher.publisher_id = visible_source.publisher_id
+        WHERE LOWER(profile.author_name) LIKE LOWER(${`%${q}%`})
+          AND COALESCE(visible_source.active,1)=1
+          AND COALESCE(visible_publisher.active,1)=1
+          ${inactiveVisiblePublisherGuard}
+        ORDER BY name LIMIT 8`,
     );
     return res.json({ suggestions: rows.map((row) => row.name) });
   } catch (error) {
@@ -866,6 +866,25 @@ const inactivePublisherGuard = Prisma.sql`
   )
 `;
 
+const inactiveVisiblePublisherGuard = Prisma.sql`
+  AND NOT EXISTS (
+    SELECT 1
+    FROM ijpass_journals.publisher_tbl inactive_publisher
+    WHERE COALESCE(inactive_publisher.active, 1) = 0
+      AND (
+        inactive_publisher.publisher_id = visible_source.publisher_id
+        OR TRIM(inactive_publisher.publisher_name) = TRIM(COALESCE(visible_publisher.publisher_name, visible_source.publisher))
+      )
+  )
+`;
+
+const affiliationNameMatch = Prisma.sql`
+  LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company))) IN (
+    LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company))),
+    LOWER(TRIM(LEADING ', ' FROM TRIM(CONCAT_WS(', ', affiliation.university_company, NULLIF(TRIM(COALESCE(affiliation.city_territory,'')),'')))))
+  )
+`;
+
 app.get("/api/indexing/resources", async (req, res, next) => {
   try {
   const previousYear = new Date().getFullYear();
@@ -958,9 +977,9 @@ app.get("/api/indexing/authors", async (req, res, next) => {
       else conditions.push(Prisma.sql`(LOWER(profile.author_name) LIKE LOWER(${`%${input.q}%`}) OR LOWER(CONCAT_WS(' ',profile.salutation,profile.author_name)) LIKE LOWER(${`%${input.q}%`}))`);
     }
     if (input.country) conditions.push(Prisma.sql`LOWER(TRIM(affiliation.country))=LOWER(${input.country})`);
-    const where = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}` : Prisma.empty;
+    const where = conditions.length ? Prisma.sql`WHERE ${Prisma.join(conditions, " AND ")}` : Prisma.sql`WHERE 1=1`;
     const [{ total }] = await prisma.$queryRaw<Array<{ total: bigint }>>(
-      Prisma.sql`SELECT COUNT(DISTINCT profile.author_profile_id) total FROM ijpass_journals.author_profile_tbl profile LEFT JOIN ijpass_journals.author_affiliation_tbl link ON link.author_profile_id=profile.author_profile_id AND link.is_current=1 LEFT JOIN ijpass_journals.affiliationdata_tbl affiliation ON affiliation.affiliation_id=link.affiliation_id ${where}`,
+      Prisma.sql`SELECT COUNT(DISTINCT profile.author_profile_id) total FROM ijpass_journals.author_profile_tbl profile LEFT JOIN ijpass_journals.author_affiliation_tbl link ON link.author_profile_id=profile.author_profile_id AND link.is_current=1 LEFT JOIN ijpass_journals.affiliationdata_tbl affiliation ON affiliation.affiliation_id=link.affiliation_id INNER JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_profile_id=profile.author_profile_id INNER JOIN ijpass_journals.manuscript_tbl manuscript ON manuscript.manuscript_id=authorship.manuscript_id INNER JOIN ijpass_journals.sourcedata_tbl visible_source ON visible_source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl visible_publisher ON visible_publisher.publisher_id=visible_source.publisher_id ${where} AND COALESCE(visible_source.active,1)=1 AND COALESCE(visible_publisher.active,1)=1 ${inactiveVisiblePublisherGuard}`,
     );
     const totalRecords = Number(total),
       totalPages = Math.max(1, Math.ceil(totalRecords / pageSize)),
@@ -977,12 +996,12 @@ app.get("/api/indexing/authors", async (req, res, next) => {
         papers: bigint;
       }>
     >(
-      Prisma.sql`SELECT profile.author_profile_id id,profile.salutation,profile.author_name name,profile.orcid,MAX(affiliation.university_company) affiliation,MAX(affiliation.country) country,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.author_profile_tbl profile LEFT JOIN ijpass_journals.author_affiliation_tbl link ON link.author_profile_id=profile.author_profile_id AND link.is_current=1 LEFT JOIN ijpass_journals.affiliationdata_tbl affiliation ON affiliation.affiliation_id=link.affiliation_id LEFT JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_profile_id=profile.author_profile_id ${where} GROUP BY profile.author_profile_id,profile.salutation,profile.author_name,profile.orcid ORDER BY profile.author_name LIMIT ${pageSize} OFFSET ${offset}`,
+      Prisma.sql`SELECT profile.author_profile_id id,profile.salutation,profile.author_name name,profile.orcid,MAX(affiliation.university_company) affiliation,MAX(affiliation.country) country,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.author_profile_tbl profile LEFT JOIN ijpass_journals.author_affiliation_tbl link ON link.author_profile_id=profile.author_profile_id AND link.is_current=1 LEFT JOIN ijpass_journals.affiliationdata_tbl affiliation ON affiliation.affiliation_id=link.affiliation_id INNER JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_profile_id=profile.author_profile_id INNER JOIN ijpass_journals.manuscript_tbl manuscript ON manuscript.manuscript_id=authorship.manuscript_id INNER JOIN ijpass_journals.sourcedata_tbl visible_source ON visible_source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl visible_publisher ON visible_publisher.publisher_id=visible_source.publisher_id ${where} AND COALESCE(visible_source.active,1)=1 AND COALESCE(visible_publisher.active,1)=1 ${inactiveVisiblePublisherGuard} GROUP BY profile.author_profile_id,profile.salutation,profile.author_name,profile.orcid ORDER BY profile.author_name LIMIT ${pageSize} OFFSET ${offset}`,
     );
     const recordIds = records.map((record) => Number(record.id));
     const [citationRows, authorDetails] = records.length ? await Promise.all([
       prisma.$queryRaw<Array<{ authorId: bigint; manuscriptId: bigint; citations: bigint }>>(
-        Prisma.sql`SELECT authorship.author_profile_id authorId,manuscript.manuscript_id manuscriptId,COUNT(DISTINCT ref.reference_id) citations FROM ijpass_journals.manuscript_author_tbl authorship INNER JOIN ijpass_journals.manuscript_tbl manuscript ON manuscript.manuscript_id=authorship.manuscript_id LEFT JOIN ijpass_journals.refdat_table ref ON ref.publication_year=manuscript.publication_year AND LOWER(TRIM(ref.article_title))=LOWER(TRIM(manuscript.article_title)) AND ref.manuscript_id<>manuscript.manuscript_id WHERE authorship.author_profile_id IN (${Prisma.join(recordIds)}) GROUP BY authorship.author_profile_id,manuscript.manuscript_id`,
+        Prisma.sql`SELECT authorship.author_profile_id authorId,manuscript.manuscript_id manuscriptId,COUNT(DISTINCT ref.reference_id) citations FROM ijpass_journals.manuscript_author_tbl authorship INNER JOIN ijpass_journals.manuscript_tbl manuscript ON manuscript.manuscript_id=authorship.manuscript_id INNER JOIN ijpass_journals.sourcedata_tbl visible_source ON visible_source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl visible_publisher ON visible_publisher.publisher_id=visible_source.publisher_id LEFT JOIN ijpass_journals.refdat_table ref ON ref.publication_year=manuscript.publication_year AND LOWER(TRIM(ref.article_title))=LOWER(TRIM(manuscript.article_title)) AND ref.manuscript_id<>manuscript.manuscript_id WHERE authorship.author_profile_id IN (${Prisma.join(recordIds)}) AND COALESCE(visible_source.active,1)=1 AND COALESCE(visible_publisher.active,1)=1 ${inactiveVisiblePublisherGuard} GROUP BY authorship.author_profile_id,manuscript.manuscript_id`,
       ),
       getMergeAuthorProfiles(recordIds),
     ]) : [[], []];
@@ -1018,10 +1037,20 @@ app.get("/api/indexing/authors/:id", async (req, res, next) => {
     if (!author) return res.status(404).json({ message: "Author profile not found." });
     const pageSize = 20;
     const [{ total }] = await prisma.$queryRaw<Array<{ total: bigint }>>(Prisma.sql`
-      SELECT COUNT(DISTINCT manuscript_id) total
-      FROM ijpass_journals.manuscript_author_tbl
-      WHERE author_profile_id=${authorId}`);
+      SELECT COUNT(DISTINCT manuscript.manuscript_id) total
+      FROM ijpass_journals.manuscript_author_tbl authorship
+      INNER JOIN ijpass_journals.manuscript_tbl manuscript
+        ON manuscript.manuscript_id=authorship.manuscript_id
+      INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+        ON visible_source.source_data_id=manuscript.journal_id
+      LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+        ON visible_publisher.publisher_id=visible_source.publisher_id
+      WHERE authorship.author_profile_id=${authorId}
+        AND COALESCE(visible_source.active,1)=1
+        AND COALESCE(visible_publisher.active,1)=1
+        ${inactiveVisiblePublisherGuard}`);
     const totalRecords = Number(total);
+    if (!totalRecords) return res.status(404).json({ message: "Author profile not found." });
     const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
     const page = Math.min(requestedPage, totalPages);
     const offset = (page - 1) * pageSize;
@@ -1054,9 +1083,16 @@ app.get("/api/indexing/authors/:id", async (req, res, next) => {
       FROM ijpass_journals.manuscript_author_tbl authorship
       INNER JOIN ijpass_journals.manuscript_tbl manuscript
         ON manuscript.manuscript_id=authorship.manuscript_id
+      INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+        ON visible_source.source_data_id=manuscript.journal_id
+      LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+        ON visible_publisher.publisher_id=visible_source.publisher_id
       INNER JOIN ijpass_journals.sourcedata_tbl source
         ON source.source_data_id=manuscript.journal_id
       WHERE authorship.author_profile_id=${authorId}
+        AND COALESCE(visible_source.active,1)=1
+        AND COALESCE(visible_publisher.active,1)=1
+        ${inactiveVisiblePublisherGuard}
       GROUP BY manuscript.manuscript_id,manuscript.article_title,
         source.source_data_id,source.journal_title,manuscript.volume,
         manuscript.issue,manuscript.pages,manuscript.publication_year,manuscript.doi
@@ -1072,11 +1108,20 @@ app.get("/api/indexing/authors/:id", async (req, res, next) => {
       SELECT authorship.manuscript_id manuscriptId,authorship.author_profile_id profileId,
         profile.salutation,COALESCE(profile.author_name,source_author.author_name) name
       FROM ijpass_journals.manuscript_author_tbl authorship
+      INNER JOIN ijpass_journals.manuscript_tbl manuscript
+        ON manuscript.manuscript_id=authorship.manuscript_id
+      INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+        ON visible_source.source_data_id=manuscript.journal_id
+      LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+        ON visible_publisher.publisher_id=visible_source.publisher_id
       LEFT JOIN ijpass_journals.author_profile_tbl profile
         ON profile.author_profile_id=authorship.author_profile_id
       LEFT JOIN ijpass_journals.authordata_tbl source_author
         ON source_author.author_data_id=authorship.author_data_id
       WHERE authorship.manuscript_id IN (${Prisma.join(paperIds)})
+        AND COALESCE(visible_source.active,1)=1
+        AND COALESCE(visible_publisher.active,1)=1
+        ${inactiveVisiblePublisherGuard}
         AND COALESCE(profile.author_name,source_author.author_name) IS NOT NULL
       ORDER BY authorship.manuscript_id,authorship.author_order`) : [];
     const [citationRows, collaboratorRows, researchAreaRows] = await Promise.all([
@@ -1086,16 +1131,29 @@ app.get("/api/indexing/authors/:id", async (req, res, next) => {
       FROM ijpass_journals.manuscript_author_tbl authorship
       INNER JOIN ijpass_journals.manuscript_tbl manuscript
         ON manuscript.manuscript_id=authorship.manuscript_id
+      INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+        ON visible_source.source_data_id=manuscript.journal_id
+      LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+        ON visible_publisher.publisher_id=visible_source.publisher_id
       LEFT JOIN ijpass_journals.refdat_table reference
         ON reference.publication_year=manuscript.publication_year
         AND LOWER(TRIM(reference.article_title))=LOWER(TRIM(manuscript.article_title))
         AND reference.manuscript_id<>manuscript.manuscript_id
       WHERE authorship.author_profile_id=${authorId}
+        AND COALESCE(visible_source.active,1)=1
+        AND COALESCE(visible_publisher.active,1)=1
+        ${inactiveVisiblePublisherGuard}
       GROUP BY manuscript.manuscript_id,manuscript.article_title,manuscript.publication_year`),
       prisma.$queryRaw<Array<{ id: bigint; salutation: string | null; name: string; papers: bigint }>>(Prisma.sql`
         SELECT collaborator.author_profile_id id,profile.salutation,profile.author_name name,
           COUNT(DISTINCT collaborator.manuscript_id) papers
         FROM ijpass_journals.manuscript_author_tbl author_link
+        INNER JOIN ijpass_journals.manuscript_tbl manuscript
+          ON manuscript.manuscript_id=author_link.manuscript_id
+        INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+          ON visible_source.source_data_id=manuscript.journal_id
+        LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+          ON visible_publisher.publisher_id=visible_source.publisher_id
         INNER JOIN ijpass_journals.manuscript_author_tbl collaborator
           ON collaborator.manuscript_id=author_link.manuscript_id
           AND collaborator.author_profile_id IS NOT NULL
@@ -1103,6 +1161,9 @@ app.get("/api/indexing/authors/:id", async (req, res, next) => {
         INNER JOIN ijpass_journals.author_profile_tbl profile
           ON profile.author_profile_id=collaborator.author_profile_id
         WHERE author_link.author_profile_id=${authorId}
+          AND COALESCE(visible_source.active,1)=1
+          AND COALESCE(visible_publisher.active,1)=1
+          ${inactiveVisiblePublisherGuard}
         GROUP BY collaborator.author_profile_id,profile.salutation,profile.author_name
         ORDER BY papers DESC,profile.author_name ASC
         LIMIT 12`),
@@ -1113,7 +1174,12 @@ app.get("/api/indexing/authors/:id", async (req, res, next) => {
           ON manuscript.manuscript_id=authorship.manuscript_id
         INNER JOIN ijpass_journals.sourcedata_tbl source
           ON source.source_data_id=manuscript.journal_id
+        LEFT JOIN ijpass_journals.publisher_tbl publisher
+          ON publisher.publisher_id=source.publisher_id
         WHERE authorship.author_profile_id=${authorId}
+          AND COALESCE(source.active,1)=1
+          AND COALESCE(publisher.active,1)=1
+          ${inactivePublisherGuard}
         GROUP BY manuscript.manuscript_id,source.subject_area,manuscript.keywords`),
     ]);
     const citationCounts = citationRows.map((row) => Number(row.citations)).sort((first, second) => second - first);
@@ -1217,19 +1283,54 @@ app.get("/api/indexing/affiliations/suggestions", async (req, res, next) => {
       elasticIds = await searchIndexIds("ijpass-affiliations", q, ["name^3", "cityTerritory^2", "address", "country^2"]),
       where = elasticIds !== null
         ? elasticIds.length
-          ? Prisma.sql`WHERE affiliation_id IN (${Prisma.join(elasticIds.map(Number))}) AND university_company LIKE ${`%${q}%`}`
+          ? Prisma.sql`WHERE affiliation.affiliation_id IN (${Prisma.join(elasticIds.map(Number))}) AND affiliation.university_company LIKE ${`%${q}%`}`
           : Prisma.sql`WHERE 1=0`
-        : Prisma.sql`WHERE university_company LIKE ${`%${q}%`}`;
+        : Prisma.sql`WHERE affiliation.university_company LIKE ${`%${q}%`}`;
     let rows = await prisma.$queryRaw<Array<{ name: string }>>(Prisma.sql`
-      SELECT TRIM(LEADING ', ' FROM TRIM(university_company)) name FROM ijpass_journals.affiliationdata_tbl ${where}
-      ORDER BY CASE WHEN TRIM(LEADING ', ' FROM TRIM(university_company)) LIKE ${`${q}%`} THEN 0 ELSE 1 END,
-        university_company LIMIT 8`);
+      SELECT matches.name
+      FROM (
+        SELECT DISTINCT TRIM(LEADING ', ' FROM TRIM(affiliation.university_company)) name
+        FROM ijpass_journals.affiliationdata_tbl affiliation
+        INNER JOIN ijpass_journals.authordata_tbl source_author
+          ON ${affiliationNameMatch}
+        INNER JOIN ijpass_journals.manuscript_author_tbl authorship
+          ON authorship.author_data_id=source_author.author_data_id
+        INNER JOIN ijpass_journals.manuscript_tbl manuscript
+          ON manuscript.manuscript_id=authorship.manuscript_id
+        INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+          ON visible_source.source_data_id=manuscript.journal_id
+        LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+          ON visible_publisher.publisher_id=visible_source.publisher_id
+        ${where}
+        AND COALESCE(visible_source.active,1)=1
+        AND COALESCE(visible_publisher.active,1)=1
+        ${inactiveVisiblePublisherGuard}
+      ) matches
+      ORDER BY CASE WHEN matches.name LIKE ${`${q}%`} THEN 0 ELSE 1 END,matches.name
+      LIMIT 8`);
     if (!rows.length && elasticIds !== null)
       rows = await prisma.$queryRaw<Array<{ name: string }>>(Prisma.sql`
-        SELECT TRIM(LEADING ', ' FROM TRIM(university_company)) name FROM ijpass_journals.affiliationdata_tbl
-        WHERE university_company LIKE ${`%${q}%`}
-        ORDER BY CASE WHEN TRIM(LEADING ', ' FROM TRIM(university_company)) LIKE ${`${q}%`} THEN 0 ELSE 1 END,
-          university_company LIMIT 8`);
+        SELECT matches.name
+        FROM (
+          SELECT DISTINCT TRIM(LEADING ', ' FROM TRIM(affiliation.university_company)) name
+          FROM ijpass_journals.affiliationdata_tbl affiliation
+          INNER JOIN ijpass_journals.authordata_tbl source_author
+            ON ${affiliationNameMatch}
+          INNER JOIN ijpass_journals.manuscript_author_tbl authorship
+            ON authorship.author_data_id=source_author.author_data_id
+          INNER JOIN ijpass_journals.manuscript_tbl manuscript
+            ON manuscript.manuscript_id=authorship.manuscript_id
+          INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+            ON visible_source.source_data_id=manuscript.journal_id
+          LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+            ON visible_publisher.publisher_id=visible_source.publisher_id
+          WHERE affiliation.university_company LIKE ${`%${q}%`}
+            AND COALESCE(visible_source.active,1)=1
+            AND COALESCE(visible_publisher.active,1)=1
+            ${inactiveVisiblePublisherGuard}
+        ) matches
+        ORDER BY CASE WHEN matches.name LIKE ${`${q}%`} THEN 0 ELSE 1 END,matches.name
+        LIMIT 8`);
     return res.json({ suggestions: rows.map((row) => row.name) });
   } catch (error) { next(error); }
 });
@@ -1241,12 +1342,27 @@ app.get("/api/indexing/affiliations", async (req, res, next) => {
       ? await searchIndexIds("ijpass-affiliations", input.q, ["name^3", "cityTerritory^2", "address", "country^2"])
       : null;
     const where = !input.q
-      ? Prisma.empty
+      ? Prisma.sql`WHERE 1=1`
       : elasticIds?.length
         ? Prisma.sql`WHERE affiliation.affiliation_id IN (${Prisma.join(elasticIds.map(Number))})`
-        : Prisma.sql`WHERE affiliation.university_company LIKE ${`%${input.q}%`} OR affiliation.city_territory LIKE ${`%${input.q}%`} OR affiliation.address LIKE ${`%${input.q}%`} OR affiliation.country LIKE ${`%${input.q}%`}`;
+        : Prisma.sql`WHERE (affiliation.university_company LIKE ${`%${input.q}%`} OR affiliation.city_territory LIKE ${`%${input.q}%`} OR affiliation.address LIKE ${`%${input.q}%`} OR affiliation.country LIKE ${`%${input.q}%`})`;
     const [{ total }] = await prisma.$queryRaw<Array<{ total: bigint }>>(
-      Prisma.sql`SELECT COUNT(*) total FROM ijpass_journals.affiliationdata_tbl affiliation ${where}`,
+      Prisma.sql`SELECT COUNT(DISTINCT affiliation.affiliation_id) total
+        FROM ijpass_journals.affiliationdata_tbl affiliation
+        INNER JOIN ijpass_journals.authordata_tbl source_author
+          ON ${affiliationNameMatch}
+        INNER JOIN ijpass_journals.manuscript_author_tbl authorship
+          ON authorship.author_data_id=source_author.author_data_id
+        INNER JOIN ijpass_journals.manuscript_tbl manuscript
+          ON manuscript.manuscript_id=authorship.manuscript_id
+        INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+          ON visible_source.source_data_id=manuscript.journal_id
+        LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+          ON visible_publisher.publisher_id=visible_source.publisher_id
+        ${where}
+        AND COALESCE(visible_source.active,1)=1
+        AND COALESCE(visible_publisher.active,1)=1
+        ${inactiveVisiblePublisherGuard}`,
     );
     const totalRecords = Number(total),
       totalPages = Math.max(1, Math.ceil(totalRecords / pageSize)),
@@ -1262,7 +1378,7 @@ app.get("/api/indexing/affiliations", async (req, res, next) => {
         papers: bigint;
       }>
     >(
-      Prisma.sql`SELECT affiliation.affiliation_id id,affiliation.university_company name,affiliation.address,affiliation.country,COUNT(DISTINCT authorship.author_profile_id) authors,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.affiliationdata_tbl affiliation LEFT JOIN ijpass_journals.authordata_tbl source_author ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company))) IN (LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company))),LOWER(TRIM(LEADING ', ' FROM TRIM(CONCAT(affiliation.university_company,IF(TRIM(COALESCE(affiliation.city_territory,''))='','',CONCAT(', ',affiliation.city_territory))))))) LEFT JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_data_id=source_author.author_data_id ${where} GROUP BY affiliation.affiliation_id,affiliation.university_company,affiliation.address,affiliation.country ORDER BY affiliation.university_company LIMIT ${pageSize} OFFSET ${offset}`,
+      Prisma.sql`SELECT affiliation.affiliation_id id,affiliation.university_company name,affiliation.address,affiliation.country,COUNT(DISTINCT authorship.author_profile_id) authors,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.affiliationdata_tbl affiliation INNER JOIN ijpass_journals.authordata_tbl source_author ON ${affiliationNameMatch} INNER JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_data_id=source_author.author_data_id INNER JOIN ijpass_journals.manuscript_tbl manuscript ON manuscript.manuscript_id=authorship.manuscript_id INNER JOIN ijpass_journals.sourcedata_tbl visible_source ON visible_source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl visible_publisher ON visible_publisher.publisher_id=visible_source.publisher_id ${where} AND COALESCE(visible_source.active,1)=1 AND COALESCE(visible_publisher.active,1)=1 ${inactiveVisiblePublisherGuard} GROUP BY affiliation.affiliation_id,affiliation.university_company,affiliation.address,affiliation.country ORDER BY affiliation.university_company LIMIT ${pageSize} OFFSET ${offset}`,
     );
     const recordIds = records.map((record) => Number(record.id));
     const citationRows = recordIds.length ? await prisma.$queryRaw<Array<{
@@ -1274,20 +1390,23 @@ app.get("/api/indexing/affiliations", async (req, res, next) => {
         COUNT(DISTINCT reference.reference_id) citations
       FROM ijpass_journals.affiliationdata_tbl affiliation
       INNER JOIN ijpass_journals.authordata_tbl source_author
-        ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company))) IN (
-          LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company))),
-          LOWER(TRIM(LEADING ', ' FROM TRIM(CONCAT(affiliation.university_company,
-            IF(TRIM(COALESCE(affiliation.city_territory,''))='','',CONCAT(', ',affiliation.city_territory))))))
-        )
+        ON ${affiliationNameMatch}
       INNER JOIN ijpass_journals.manuscript_author_tbl authorship
         ON authorship.author_data_id=source_author.author_data_id
       INNER JOIN ijpass_journals.manuscript_tbl manuscript
         ON manuscript.manuscript_id=authorship.manuscript_id
+      INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+        ON visible_source.source_data_id=manuscript.journal_id
+      LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+        ON visible_publisher.publisher_id=visible_source.publisher_id
       LEFT JOIN ijpass_journals.refdat_table reference
         ON reference.publication_year=manuscript.publication_year
         AND LOWER(TRIM(reference.article_title))=LOWER(TRIM(manuscript.article_title))
         AND reference.manuscript_id<>manuscript.manuscript_id
       WHERE affiliation.affiliation_id IN (${Prisma.join(recordIds)})
+        AND COALESCE(visible_source.active,1)=1
+        AND COALESCE(visible_publisher.active,1)=1
+        ${inactiveVisiblePublisherGuard}
       GROUP BY affiliation.affiliation_id,manuscript.manuscript_id`) : [];
     const metrics = new Map<number, { citations: number; hIndex: number; i10Index: number }>();
     for (const record of records) {
@@ -1316,25 +1435,51 @@ app.get("/api/indexing/countries/suggestions", async (req, res, next) => {
     const elasticCountries = await searchCountryIds(q);
     const where = elasticCountries !== null
       ? elasticCountries.length
-        ? Prisma.sql`WHERE country IN (${Prisma.join(elasticCountries)}) AND country LIKE ${`%${q}%`}`
+        ? Prisma.sql`WHERE affiliation.country IN (${Prisma.join(elasticCountries)}) AND affiliation.country LIKE ${`%${q}%`}`
         : Prisma.sql`WHERE 1=0`
-      : Prisma.sql`WHERE country LIKE ${`%${q}%`}`;
+      : Prisma.sql`WHERE affiliation.country LIKE ${`%${q}%`}`;
     let rows = await prisma.$queryRaw<Array<{ country: string }>>(Prisma.sql`
       SELECT matches.country
       FROM (
-        SELECT DISTINCT TRIM(country) country
-        FROM ijpass_journals.affiliationdata_tbl
+        SELECT DISTINCT TRIM(affiliation.country) country
+        FROM ijpass_journals.affiliationdata_tbl affiliation
+        INNER JOIN ijpass_journals.authordata_tbl source_author
+          ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company)))=LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company)))
+        INNER JOIN ijpass_journals.manuscript_author_tbl authorship
+          ON authorship.author_data_id=source_author.author_data_id
+        INNER JOIN ijpass_journals.manuscript_tbl manuscript
+          ON manuscript.manuscript_id=authorship.manuscript_id
+        INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+          ON visible_source.source_data_id=manuscript.journal_id
+        LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+          ON visible_publisher.publisher_id=visible_source.publisher_id
         ${where}
+          AND COALESCE(visible_source.active,1)=1
+          AND COALESCE(visible_publisher.active,1)=1
+          ${inactiveVisiblePublisherGuard}
       ) matches
       ORDER BY CASE WHEN matches.country LIKE ${`${q}%`} THEN 0 ELSE 1 END,matches.country
       LIMIT 8`);
     if (!rows.length && elasticCountries !== null)
       rows = await prisma.$queryRaw<Array<{ country: string }>>(Prisma.sql`
-        SELECT TRIM(country) country
-        FROM ijpass_journals.affiliationdata_tbl
-        WHERE country LIKE ${`%${q}%`}
-        GROUP BY TRIM(country)
-        ORDER BY TRIM(country)
+        SELECT DISTINCT TRIM(affiliation.country) country
+        FROM ijpass_journals.affiliationdata_tbl affiliation
+        INNER JOIN ijpass_journals.authordata_tbl source_author
+          ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company)))=LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company)))
+        INNER JOIN ijpass_journals.manuscript_author_tbl authorship
+          ON authorship.author_data_id=source_author.author_data_id
+        INNER JOIN ijpass_journals.manuscript_tbl manuscript
+          ON manuscript.manuscript_id=authorship.manuscript_id
+        INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+          ON visible_source.source_data_id=manuscript.journal_id
+        LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+          ON visible_publisher.publisher_id=visible_source.publisher_id
+        WHERE affiliation.country LIKE ${`%${q}%`}
+          AND COALESCE(visible_source.active,1)=1
+          AND COALESCE(visible_publisher.active,1)=1
+          ${inactiveVisiblePublisherGuard}
+        GROUP BY TRIM(affiliation.country)
+        ORDER BY TRIM(affiliation.country)
         LIMIT 8`);
     return res.json({ suggestions: rows.map((row) => row.country) });
   } catch (error) {
@@ -1355,7 +1500,22 @@ app.get("/api/indexing/countries", async (req, res, next) => {
         : Prisma.sql`WHERE affiliation.country LIKE ${`%${input.q}%`}`
       : Prisma.sql`WHERE TRIM(affiliation.country)<>''`;
     const [{ total }] = await prisma.$queryRaw<Array<{ total: bigint }>>(
-      Prisma.sql`SELECT COUNT(DISTINCT affiliation.country) total FROM ijpass_journals.affiliationdata_tbl affiliation ${where}`,
+      Prisma.sql`SELECT COUNT(DISTINCT affiliation.country) total
+        FROM ijpass_journals.affiliationdata_tbl affiliation
+        INNER JOIN ijpass_journals.authordata_tbl source_author
+          ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company)))=LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company)))
+        INNER JOIN ijpass_journals.manuscript_author_tbl authorship
+          ON authorship.author_data_id=source_author.author_data_id
+        INNER JOIN ijpass_journals.manuscript_tbl manuscript
+          ON manuscript.manuscript_id=authorship.manuscript_id
+        INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+          ON visible_source.source_data_id=manuscript.journal_id
+        LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+          ON visible_publisher.publisher_id=visible_source.publisher_id
+        ${where}
+        AND COALESCE(visible_source.active,1)=1
+        AND COALESCE(visible_publisher.active,1)=1
+        ${inactiveVisiblePublisherGuard}`,
     );
     const totalRecords = Number(total),
       totalPages = Math.max(1, Math.ceil(totalRecords / pageSize)),
@@ -1369,7 +1529,7 @@ app.get("/api/indexing/countries", async (req, res, next) => {
         papers: bigint;
       }>
     >(
-      Prisma.sql`SELECT affiliation.country,COUNT(DISTINCT affiliation.affiliation_id) affiliations,COUNT(DISTINCT authorship.author_profile_id) authors,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.affiliationdata_tbl affiliation LEFT JOIN ijpass_journals.authordata_tbl source_author ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company)))=LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company))) LEFT JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_data_id=source_author.author_data_id ${where} GROUP BY affiliation.country ORDER BY affiliation.country LIMIT ${pageSize} OFFSET ${offset}`,
+      Prisma.sql`SELECT affiliation.country,COUNT(DISTINCT affiliation.affiliation_id) affiliations,COUNT(DISTINCT authorship.author_profile_id) authors,COUNT(DISTINCT authorship.manuscript_id) papers FROM ijpass_journals.affiliationdata_tbl affiliation INNER JOIN ijpass_journals.authordata_tbl source_author ON LOWER(TRIM(LEADING ', ' FROM TRIM(source_author.university_company)))=LOWER(TRIM(LEADING ', ' FROM TRIM(affiliation.university_company))) INNER JOIN ijpass_journals.manuscript_author_tbl authorship ON authorship.author_data_id=source_author.author_data_id INNER JOIN ijpass_journals.manuscript_tbl manuscript ON manuscript.manuscript_id=authorship.manuscript_id INNER JOIN ijpass_journals.sourcedata_tbl visible_source ON visible_source.source_data_id=manuscript.journal_id LEFT JOIN ijpass_journals.publisher_tbl visible_publisher ON visible_publisher.publisher_id=visible_source.publisher_id ${where} AND COALESCE(visible_source.active,1)=1 AND COALESCE(visible_publisher.active,1)=1 ${inactiveVisiblePublisherGuard} GROUP BY affiliation.country ORDER BY affiliation.country LIMIT ${pageSize} OFFSET ${offset}`,
     );
     const recordCountries = records.map((record) => record.country);
     const citationRows = recordCountries.length ? await prisma.$queryRaw<Array<{
@@ -1387,11 +1547,18 @@ app.get("/api/indexing/countries", async (req, res, next) => {
         ON authorship.author_data_id=source_author.author_data_id
       INNER JOIN ijpass_journals.manuscript_tbl manuscript
         ON manuscript.manuscript_id=authorship.manuscript_id
+      INNER JOIN ijpass_journals.sourcedata_tbl visible_source
+        ON visible_source.source_data_id=manuscript.journal_id
+      LEFT JOIN ijpass_journals.publisher_tbl visible_publisher
+        ON visible_publisher.publisher_id=visible_source.publisher_id
       LEFT JOIN ijpass_journals.refdat_table reference
         ON reference.publication_year=manuscript.publication_year
         AND LOWER(TRIM(reference.article_title))=LOWER(TRIM(manuscript.article_title))
         AND reference.manuscript_id<>manuscript.manuscript_id
       WHERE affiliation.country IN (${Prisma.join(recordCountries)})
+        AND COALESCE(visible_source.active,1)=1
+        AND COALESCE(visible_publisher.active,1)=1
+        ${inactiveVisiblePublisherGuard}
       GROUP BY affiliation.country,manuscript.manuscript_id`) : [];
     const countryMetrics = new Map<string, { hIndex: number; i10Index: number }>();
     for (const record of records) {
@@ -1426,11 +1593,16 @@ app.get("/api/indexing/countries", async (req, res, next) => {
 app.get("/api/journal-index/suggestions", async (req, res, next) => {
   try {
     const { q } = z.object({ q: z.string().trim().min(2).max(150) }).parse(req.query);
-    const indexedSuggestions = await suggestIndexValues("ijpass-resources", q, "title");
-    if (indexedSuggestions?.length) return res.json({ suggestions: indexedSuggestions });
     const rows = await prisma.$queryRaw<Array<{ title: string }>>(Prisma.sql`
-      SELECT DISTINCT TRIM(journal_title) title FROM ijpass_journals.sourcedata_tbl
-      WHERE journal_title LIKE ${`%${q}%`} ORDER BY title LIMIT 8`);
+      SELECT DISTINCT TRIM(source.journal_title) title
+      FROM ijpass_journals.sourcedata_tbl source
+      LEFT JOIN ijpass_journals.publisher_tbl publisher
+        ON publisher.publisher_id=source.publisher_id
+      WHERE source.journal_title LIKE ${`%${q}%`}
+        AND COALESCE(source.active,1)=1
+        AND COALESCE(publisher.active,1)=1
+        ${inactivePublisherGuard}
+      ORDER BY title LIMIT 8`);
     return res.json({ suggestions: rows.map((row) => row.title) });
   } catch (error) { next(error); }
 });
@@ -1442,13 +1614,21 @@ app.get("/api/journal-index/:sourceId/articles/suggestions", async (req, res, ne
     const indexedIds = await searchManuscriptIds(q, sourceId);
     const where = indexedIds !== null
       ? indexedIds.length
-        ? Prisma.sql`manuscript_id IN (${Prisma.join(indexedIds.map(Number))})`
+        ? Prisma.sql`manuscript.manuscript_id IN (${Prisma.join(indexedIds.map(Number))})`
         : Prisma.sql`1=0`
-      : Prisma.sql`journal_id=${sourceId} AND article_title LIKE ${`%${q}%`}`;
+      : Prisma.sql`manuscript.journal_id=${sourceId} AND manuscript.article_title LIKE ${`%${q}%`}`;
     const rows = await prisma.$queryRaw<Array<{ title: string }>>(Prisma.sql`
-      SELECT TRIM(article_title) title FROM ijpass_journals.manuscript_tbl
-      WHERE journal_id=${sourceId} AND ${where}
-      ORDER BY CASE WHEN article_title LIKE ${`${q}%`} THEN 0 ELSE 1 END,article_title LIMIT 8`);
+      SELECT TRIM(manuscript.article_title) title
+      FROM ijpass_journals.manuscript_tbl manuscript
+      INNER JOIN ijpass_journals.sourcedata_tbl source
+        ON source.source_data_id=manuscript.journal_id
+      LEFT JOIN ijpass_journals.publisher_tbl publisher
+        ON publisher.publisher_id=source.publisher_id
+      WHERE manuscript.journal_id=${sourceId} AND ${where}
+        AND COALESCE(source.active,1)=1
+        AND COALESCE(publisher.active,1)=1
+        ${inactivePublisherGuard}
+      ORDER BY CASE WHEN manuscript.article_title LIKE ${`${q}%`} THEN 0 ELSE 1 END,manuscript.article_title LIMIT 8`);
     return res.json({ suggestions: rows.map((row) => row.title) });
   } catch (error) { next(error); }
 });
@@ -1465,17 +1645,22 @@ app.get("/api/journal-index", async (req, res, next) => {
     const elasticIds = input.q
       ? await searchIndexIds("ijpass-resources", input.q, ["title^4"], "title.keyword")
       : null;
-    const where = !input.q
+    const search = !input.q
       ? Prisma.empty
       : elasticIds?.length
-        ? Prisma.sql`WHERE source.source_data_id IN (${Prisma.join(elasticIds.map(Number))})`
-        : Prisma.sql`WHERE source.journal_title LIKE ${`%${input.q}%`}`;
+        ? Prisma.sql`AND source.source_data_id IN (${Prisma.join(elasticIds.map(Number))})`
+        : Prisma.sql`AND source.journal_title LIKE ${`%${input.q}%`}`;
     const [{ total }] = await prisma.$queryRaw<
       Array<{ total: bigint }>
     >(Prisma.sql`
       SELECT COUNT(*) AS total
       FROM ijpass_journals.sourcedata_tbl AS source
-      ${where}
+      LEFT JOIN ijpass_journals.publisher_tbl publisher
+        ON publisher.publisher_id=source.publisher_id
+      WHERE COALESCE(source.active,1)=1
+        AND COALESCE(publisher.active,1)=1
+        ${inactivePublisherGuard}
+        ${search}
     `);
     const totalRecords = Number(total);
     const totalPages = Math.max(1, Math.ceil(totalRecords / pageSize));
@@ -1495,6 +1680,8 @@ app.get("/api/journal-index", async (req, res, next) => {
         COUNT(manuscript.manuscript_id) AS articleCount,
         COALESCE(MAX(citation_totals.citation_count), 0) AS citationCount
       FROM ijpass_journals.sourcedata_tbl AS source
+      LEFT JOIN ijpass_journals.publisher_tbl publisher
+        ON publisher.publisher_id=source.publisher_id
       LEFT JOIN ijpass_journals.manuscript_tbl AS manuscript
         ON manuscript.journal_id = source.source_data_id
       LEFT JOIN (
@@ -1507,7 +1694,10 @@ app.get("/api/journal-index", async (req, res, next) => {
         GROUP BY cited_manuscript.journal_id
       ) AS citation_totals
         ON citation_totals.journal_id = source.source_data_id
-      ${where}
+      WHERE COALESCE(source.active,1)=1
+        AND COALESCE(publisher.active,1)=1
+        ${inactivePublisherGuard}
+        ${search}
       GROUP BY source.source_data_id, source.journal_title
       ORDER BY citationCount DESC, articleCount DESC, TRIM(source.journal_title) ASC
       LIMIT ${pageSize} OFFSET ${offset}
@@ -1882,8 +2072,13 @@ app.get(
       FROM ijpass_journals.manuscript_tbl AS manuscript
       INNER JOIN ijpass_journals.sourcedata_tbl AS source
         ON source.source_data_id = manuscript.journal_id
+      LEFT JOIN ijpass_journals.publisher_tbl AS publisher
+        ON publisher.publisher_id = source.publisher_id
       WHERE source.source_data_id = ${params.sourceId}
         AND manuscript.manuscript_id = ${params.manuscriptId}
+        AND COALESCE(source.active,1)=1
+        AND COALESCE(publisher.active,1)=1
+        ${inactivePublisherGuard}
       LIMIT 1
     `);
       if (!article)
@@ -1956,11 +2151,24 @@ app.get(
         ON citing.manuscript_id = cited_reference.manuscript_id
       INNER JOIN ijpass_journals.sourcedata_tbl AS citing_source
         ON citing_source.source_data_id = citing.journal_id
+      LEFT JOIN ijpass_journals.publisher_tbl AS citing_publisher
+        ON citing_publisher.publisher_id = citing_source.publisher_id
       LEFT JOIN ijpass_journals.manuscript_author_tbl AS citing_authorship
         ON citing_authorship.manuscript_id = citing.manuscript_id
       LEFT JOIN ijpass_journals.authordata_tbl AS citing_author
         ON citing_author.author_data_id = citing_authorship.author_data_id
       WHERE cited_reference.publication_year = ${article.publicationYear}
+        AND COALESCE(citing_source.active,1)=1
+        AND COALESCE(citing_publisher.active,1)=1
+        AND NOT EXISTS (
+          SELECT 1
+          FROM ijpass_journals.publisher_tbl inactive_citing_publisher
+          WHERE COALESCE(inactive_citing_publisher.active,1)=0
+            AND (
+              inactive_citing_publisher.publisher_id=citing_source.publisher_id
+              OR TRIM(inactive_citing_publisher.publisher_name)=TRIM(COALESCE(citing_publisher.publisher_name,citing_source.publisher))
+            )
+        )
         AND REGEXP_REPLACE(LOWER(TRIM(cited_reference.article_title)), '[^[:alnum:]]+', '') = REGEXP_REPLACE(LOWER(TRIM(${article.title})), '[^[:alnum:]]+', '')
         AND citing.manuscript_id <> ${params.manuscriptId}
       GROUP BY citing.manuscript_id, citing_source.source_data_id, citing.article_title, citing_source.journal_title, citing.publication_year, cited_reference.reference_id, cited_reference.raw_reference
@@ -3458,6 +3666,240 @@ app.get(
         totalPages,
         totalRecords,
       });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+app.get(
+  "/api/admin/sources/export/:format",
+  requireAuth,
+  requireRole(UserRole.SUPER_ADMIN),
+  async (req, res, next) => {
+    try {
+      const format = z.enum(["xlsx", "pdf"]).parse(req.params.format);
+      const records = await prisma.$queryRaw<Array<{
+        id: bigint;
+        journalId: number;
+        journalTitle: string;
+        abbreviation: string | null;
+        printIssn: string | null;
+        onlineIssn: string | null;
+        subjectArea: string | null;
+        sourceType: string;
+        publisher: string | null;
+        indexedFromYear: number | null;
+        website: string | null;
+        email: string | null;
+        active: number;
+        articleCount: bigint;
+        citationCount: bigint;
+      }>>(Prisma.sql`
+        SELECT source.source_data_id id,source.journal_id journalId,
+          TRIM(source.journal_title) journalTitle,NULLIF(TRIM(source.abbreviation),'') abbreviation,
+          NULLIF(TRIM(source.print_issn),'') printIssn,NULLIF(TRIM(source.online_issn),'') onlineIssn,
+          NULLIF(TRIM(source.subject_area),'') subjectArea,
+          COALESCE(NULLIF(TRIM(source.source_type),''),'Journal') sourceType,
+          COALESCE(NULLIF(TRIM(publisher.publisher_name),''),NULLIF(TRIM(source.publisher),'')) publisher,
+          source.indexed_from_year indexedFromYear,NULLIF(TRIM(source.website),'') website,
+          NULLIF(TRIM(source.email),'') email,COALESCE(source.active,1) active,
+          COUNT(DISTINCT manuscript.manuscript_id) articleCount,
+          COALESCE(MAX(citation_totals.citation_count),0) citationCount
+        FROM ijpass_journals.sourcedata_tbl source
+        LEFT JOIN ijpass_journals.publisher_tbl publisher
+          ON publisher.publisher_id=source.publisher_id
+        LEFT JOIN ijpass_journals.manuscript_tbl manuscript
+          ON manuscript.journal_id=source.source_data_id
+        LEFT JOIN (
+          SELECT cited_manuscript.journal_id,COUNT(*) citation_count
+          FROM ijpass_journals.manuscript_tbl cited_manuscript
+          INNER JOIN ijpass_journals.refdat_table matching_reference
+            ON matching_reference.publication_year=cited_manuscript.publication_year
+            AND REGEXP_REPLACE(LOWER(TRIM(matching_reference.article_title)),'[^[:alnum:]]+','')=
+              REGEXP_REPLACE(LOWER(TRIM(cited_manuscript.article_title)),'[^[:alnum:]]+','')
+            AND matching_reference.manuscript_id<>cited_manuscript.manuscript_id
+          GROUP BY cited_manuscript.journal_id
+        ) citation_totals ON citation_totals.journal_id=source.source_data_id
+        GROUP BY source.source_data_id,source.journal_id,source.journal_title,source.abbreviation,
+          source.print_issn,source.online_issn,source.subject_area,source.source_type,
+          publisher.publisher_name,source.publisher,source.indexed_from_year,source.website,
+          source.email,source.active
+        ORDER BY source.journal_title,source.source_data_id`);
+
+      const generatedAt = new Date();
+      const dateLabel = generatedAt.toISOString().slice(0, 10);
+      const text = (value: unknown) => value === null || value === undefined || value === "" ? "—" : String(value);
+
+      if (format === "xlsx") {
+        const workbook = new ExcelJS.Workbook();
+        workbook.creator = "International Journal Publishers Association (IJPAss)";
+        workbook.created = generatedAt;
+        workbook.modified = generatedAt;
+        workbook.subject = "Complete IJPAss resource directory";
+        const worksheet = workbook.addWorksheet("All Resources", {
+          views: [{ state: "frozen", ySplit: 5, activeCell: "A6" }],
+          properties: { defaultRowHeight: 19 },
+          pageSetup: { orientation: "landscape", paperSize: 9, fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+        });
+        const columns = [
+          ["Sl. No.", 10], ["Resource ID", 13], ["Journal ID", 12], ["Resource Title", 52],
+          ["Abbreviation", 17], ["Print ISSN", 15], ["Online ISSN", 15], ["Subject Area", 34],
+          ["Resource Type", 24], ["Source Publisher", 30], ["Indexed From", 14], ["Status", 12],
+          ["Articles", 12], ["Citations", 12], ["Website", 34], ["Email", 30],
+        ] as const;
+        worksheet.columns = columns.map(([, width]) => ({ width }));
+        worksheet.mergeCells("A1:P1");
+        worksheet.getCell("A1").value = "International Journal Publishers Association (IJPAss)";
+        worksheet.getCell("A1").font = { name: "Aptos Display", size: 18, bold: true, color: { argb: "FFFFFFFF" } };
+        worksheet.getCell("A1").alignment = { vertical: "middle", horizontal: "left" };
+        worksheet.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF073B4C" } };
+        worksheet.getRow(1).height = 30;
+        worksheet.mergeCells("A2:P2");
+        worksheet.getCell("A2").value = "Complete Resource Directory";
+        worksheet.getCell("A2").font = { name: "Aptos Display", size: 14, bold: true, color: { argb: "FF087F76" } };
+        worksheet.getRow(2).height = 24;
+        worksheet.mergeCells("A3:P3");
+        worksheet.getCell("A3").value = `Generated: ${generatedAt.toLocaleString("en-IN")}  |  Total resources: ${records.length.toLocaleString("en-IN")}`;
+        worksheet.getCell("A3").font = { name: "Aptos", size: 10, color: { argb: "FF536B75" } };
+        worksheet.getRow(4).height = 8;
+        const headingRow = worksheet.getRow(5);
+        headingRow.values = columns.map(([label]) => label);
+        headingRow.height = 28;
+        headingRow.eachCell((cell) => {
+          cell.font = { name: "Aptos", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF087F76" } };
+          cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+          cell.border = { bottom: { style: "medium", color: { argb: "FF073B4C" } } };
+        });
+        for (const [index, record] of records.entries()) {
+          const row = worksheet.addRow([
+            index + 1, Number(record.id), record.journalId, record.journalTitle, record.abbreviation || "",
+            record.printIssn || "", record.onlineIssn || "", record.subjectArea || "", record.sourceType,
+            record.publisher || "", record.indexedFromYear || "", Number(record.active) === 1 ? "Enabled" : "Disabled",
+            Number(record.articleCount), Number(record.citationCount), record.website || "", record.email || "",
+          ]);
+          row.height = 34;
+          row.eachCell((cell, columnNumber) => {
+            cell.font = { name: "Aptos", size: 9, color: { argb: "FF173A48" } };
+            cell.alignment = {
+              vertical: "middle",
+              horizontal: [1, 2, 3, 11, 12, 13, 14].includes(columnNumber) ? "center" : "left",
+              wrapText: true,
+            };
+            cell.border = { bottom: { style: "hair", color: { argb: "FFD8E4E7" } } };
+            if (index % 2 === 1)
+              cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4F8F8" } };
+          });
+          row.getCell(4).font = { name: "Aptos", size: 9, bold: true, color: { argb: "FF173A48" } };
+          row.getCell(12).font = { name: "Aptos", size: 9, bold: true, color: { argb: Number(record.active) === 1 ? "FF087F76" : "FFB42318" } };
+          if (record.website) {
+            const websiteCell = row.getCell(15);
+            websiteCell.value = { text: record.website, hyperlink: record.website };
+            websiteCell.font = { name: "Aptos", size: 9, color: { argb: "FF0563C1" }, underline: true };
+          }
+        }
+        worksheet.autoFilter = { from: "A5", to: "P5" };
+        worksheet.pageSetup.margins = { left: 0.25, right: 0.25, top: 0.45, bottom: 0.45, header: 0.2, footer: 0.2 };
+        worksheet.headerFooter.oddFooter = "&LIJPAss Resource Directory&CPage &P of &N&R" + dateLabel;
+        const output = await workbook.xlsx.writeBuffer();
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.setHeader("Content-Disposition", `attachment; filename="ijpass-resources-${dateLabel}.xlsx"`);
+        res.setHeader("Cache-Control", "no-store");
+        return res.send(Buffer.from(output));
+      }
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="ijpass-resources-${dateLabel}.pdf"`);
+      res.setHeader("Cache-Control", "no-store");
+      const document = new PDFDocument({ size: "A4", layout: "landscape", margin: 28, bufferPages: true, info: {
+        Title: "IJPAss Complete Resource Directory",
+        Author: "International Journal Publishers Association (IJPAss)",
+        Subject: "Complete indexed resource directory",
+      } });
+      document.on("error", next);
+      document.pipe(res);
+      const margin = 28;
+      const pageWidth = document.page.width - margin * 2;
+      const pdfColumns = [
+        { key: "number", label: "No.", width: 24, align: "center" as const },
+        { key: "id", label: "Resource ID", width: 42, align: "center" as const },
+        { key: "title", label: "Resource Title", width: 181, align: "left" as const },
+        { key: "abbreviation", label: "Abbr.", width: 45, align: "left" as const },
+        { key: "issn", label: "ISSN", width: 72, align: "left" as const },
+        { key: "subject", label: "Subject Area", width: 91, align: "left" as const },
+        { key: "type", label: "Type", width: 62, align: "left" as const },
+        { key: "publisher", label: "Publisher", width: 92, align: "left" as const },
+        { key: "year", label: "From", width: 34, align: "center" as const },
+        { key: "status", label: "Status", width: 43, align: "center" as const },
+        { key: "articles", label: "Papers", width: 39, align: "center" as const },
+        { key: "citations", label: "Cites", width: 39, align: "center" as const },
+      ];
+      const tableWidth = pdfColumns.reduce((sum, column) => sum + column.width, 0);
+      const drawDocumentHeading = () => {
+        document.roundedRect(margin, 24, pageWidth, 58, 7).fill("#073B4C");
+        document.fillColor("#FFFFFF").font("Helvetica-Bold").fontSize(17)
+          .text("International Journal Publishers Association (IJPAss)", margin + 15, 36, { width: pageWidth - 30 });
+        document.fillColor("#BCECE7").font("Helvetica").fontSize(9.5)
+          .text("Complete Resource Directory", margin + 15, 61, { width: 300 });
+        document.fillColor("#FFFFFF").fontSize(8)
+          .text(`Generated ${generatedAt.toLocaleString("en-IN")}  |  ${records.length.toLocaleString("en-IN")} resources`, margin + 350, 62, { width: pageWidth - 365, align: "right" });
+      };
+      const drawTableHeader = (top: number) => {
+        let x = margin;
+        document.rect(margin, top, tableWidth, 25).fill("#087F76");
+        document.font("Helvetica-Bold").fontSize(6.7).fillColor("#FFFFFF");
+        for (const column of pdfColumns) {
+          document.text(column.label, x + 3, top + 7, { width: column.width - 6, align: column.align, lineBreak: false });
+          x += column.width;
+        }
+        return top + 25;
+      };
+      drawDocumentHeading();
+      let currentY = drawTableHeader(94);
+      for (const [index, record] of records.entries()) {
+        const rowValues: Record<string, string> = {
+          number: String(index + 1), id: String(Number(record.id)), title: record.journalTitle,
+          abbreviation: text(record.abbreviation),
+          issn: `P: ${text(record.printIssn)}\nO: ${text(record.onlineIssn)}`,
+          subject: text(record.subjectArea), type: text(record.sourceType), publisher: text(record.publisher),
+          year: text(record.indexedFromYear), status: Number(record.active) === 1 ? "Enabled" : "Disabled",
+          articles: Number(record.articleCount).toLocaleString("en-IN"), citations: Number(record.citationCount).toLocaleString("en-IN"),
+        };
+        document.font("Helvetica").fontSize(6.5);
+        const rowHeight = Math.max(22, ...pdfColumns.map((column) =>
+          document.heightOfString(rowValues[column.key], { width: column.width - 6, lineGap: 1 }) + 8));
+        if (currentY + rowHeight > document.page.height - 40) {
+          document.addPage({ size: "A4", layout: "landscape", margin });
+          document.fillColor("#073B4C").font("Helvetica-Bold").fontSize(9)
+            .text("IJPAss Complete Resource Directory", margin, 22, { width: tableWidth });
+          currentY = drawTableHeader(39);
+        }
+        if (index % 2 === 1) document.rect(margin, currentY, tableWidth, rowHeight).fill("#F3F8F8");
+        let x = margin;
+        document.font("Helvetica").fontSize(6.5).fillColor("#294B58");
+        for (const column of pdfColumns) {
+          if (column.key === "title") document.font("Helvetica-Bold");
+          else document.font("Helvetica");
+          if (column.key === "status") document.fillColor(Number(record.active) === 1 ? "#087F76" : "#B42318");
+          else document.fillColor("#294B58");
+          document.text(rowValues[column.key], x + 3, currentY + 5, {
+            width: column.width - 6, height: rowHeight - 8, align: column.align, lineGap: 1,
+          });
+          x += column.width;
+        }
+        document.moveTo(margin, currentY + rowHeight).lineTo(margin + tableWidth, currentY + rowHeight)
+          .lineWidth(0.35).strokeColor("#CADADC").stroke();
+        currentY += rowHeight;
+      }
+      const pageRange = document.bufferedPageRange();
+      for (let pageIndex = pageRange.start; pageIndex < pageRange.start + pageRange.count; pageIndex += 1) {
+        document.switchToPage(pageIndex);
+        document.font("Helvetica").fontSize(7).fillColor("#6B7F87")
+          .text(`IJPAss  •  Resource Directory  •  ${dateLabel}`, margin, document.page.height - 24, { width: pageWidth / 2, lineBreak: false })
+          .text(`Page ${pageIndex + 1} of ${pageRange.count}`, margin + pageWidth / 2, document.page.height - 24, { width: pageWidth / 2, align: "right", lineBreak: false });
+      }
+      document.end();
     } catch (error) {
       next(error);
     }
